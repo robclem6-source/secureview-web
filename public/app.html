@@ -737,7 +737,7 @@ select.form-input option{background:var(--dark)}
   </div>
   <div class="sb-section">
     <div class="sb-label">Actions</div>
-    <button class="btn-ghost" onclick="exportReport()" style="width:100%;margin-bottom:6px;font-size:9px">&#128196; EXPORT REPORT</button>
+    <button class="btn-ghost" id="exportReportBtn" onclick="exportReport(event)" style="width:100%;margin-bottom:6px;font-size:9px">&#128196; EXPORT REPORT</button>
     <button class="btn-ghost" onclick="resetAll()" style="width:100%;font-size:9px">&#8635; RESET ALL</button>
   </div>
 </div>
@@ -758,6 +758,9 @@ select.form-input option{background:var(--dark)}
 // ═══════════════════════════════════════════
 let currentPage = 1;
 let scores = {cpted: null, cctv: null, guard: null, access: null};
+// Full raw AI result objects per section — kept for PDF export (rendering functions display
+// a subset of this to the DOM, but export needs the complete narrative/findings/breakdown).
+let resultData = {cpted: null, guard: null, access: null}; // cctv lives per-camera on cctvCameras[].analysis
 
 // Property levels — shared across CPTED zones, CCTV cameras, and used for map level tabs.
 let propertyLevels = ['Level 1', 'Level 2'];
@@ -979,6 +982,7 @@ function fallbackCpted() {
 }
 
 function renderCptedResults(a) {
+  resultData.cpted = a;
   scores.cpted = a.overallScore;
   updateSidebarScores();
 
@@ -1407,6 +1411,7 @@ Evaluate this guard program and respond ONLY with valid JSON (no markdown):
 function fallbackGuard(){return{overallScore:55,coverage:{score:55,assessment:"Coverage gaps identified."},accountability:{score:40,assessment:"Accountability tools are lacking."},training:{score:60,assessment:"Basic training present."},costEffectiveness:{score:65,assessment:"Cost is within market range."},findings:[{severity:'warning',area:'Accountability',title:'No incident reporting system',detail:'Verbal-only reporting creates liability exposure and eliminates audit trails. A digital reporting system is standard for professional guard programs.'},{severity:'warning',area:'Coverage',title:'Weekend coverage gap',detail:'No weekend guard coverage represents a significant vulnerability, particularly given prior incidents at this property.'}],costBenchmark:{monthlyRate:7800,marketRangeLow:7200,marketRangeHigh:9400,assessment:'Current rate is within the Portland market range for 2-guard contract services.',city:'Portland, Oregon'},recommendations:['Require digital incident reporting (TrackTik or Silvertrac) as a condition of contract renewal.','Add GPS guard tour verification to create accountability and patrol evidence.','Address the weekend coverage gap with virtual guard monitoring as a cost-effective option.'],summary:'The guard program provides adequate weekday coverage but has significant accountability gaps. Verbal-only incident reporting and no tour verification are below industry standards. Contract renewal is the right opportunity to negotiate improvements.'};}
 
 function renderGuardResults(a) {
+  resultData.guard = a;
   scores.guard = a.overallScore; updateSidebarScores();
   const n=document.getElementById('guardScoreNum'); n.textContent=a.overallScore; n.style.color=sc(a.overallScore);
   document.getElementById('guardScoreBreakdown').innerHTML=sbd('Coverage',a.coverage?.score||0)+sbd('Accountability',a.accountability?.score||0)+sbd('Training',a.training?.score||0)+sbd('Cost Effectiveness',a.costEffectiveness?.score||0);
@@ -1559,6 +1564,7 @@ Evaluate this access control system and respond ONLY with valid JSON (no markdow
 function fallbackAc(){return{overallScore:58,credentialManagement:{score:50,assessment:"Credential hygiene requires attention."},entryPointSecurity:{score:65,assessment:"Basic access control is in place."},auditability:{score:55,assessment:"Audit trail capability is present but underutilised."},visitorManagement:{score:60,assessment:"Basic visitor process is in place."},findings:[{severity:'warning',area:'Credential Management',title:'Contractor credentials likely still active',detail:'Credentials from a renovation project 18 months ago may not have been revoked. An immediate audit is recommended to identify and deactivate orphaned credentials.'},{severity:'warning',area:'Auditing',title:'No regular credential audit process',detail:'Without periodic audits, the active credential count will drift from the actual user population, increasing the risk of unauthorised access.'}],recommendations:['Conduct an immediate full credential audit to identify and deactivate all orphaned, contractor, and former-employee credentials.','Establish a quarterly credential review cycle tied to the HR offboarding process.','Integrate visitor management with the access control system for a complete audit trail.'],summary:'The access control system provides adequate basic protection but has credential management gaps that require immediate attention. Orphaned contractor credentials represent the most pressing risk. A structured audit and ongoing review process will significantly improve the security posture.'};}
 
 function renderAcResults(a) {
+  resultData.access = a;
   scores.access = a.overallScore; updateSidebarScores();
   const n=document.getElementById('acScoreNum'); n.textContent=a.overallScore; n.style.color=sc(a.overallScore);
   document.getElementById('acScoreBreakdown').innerHTML=sbd('Credential Mgmt',a.credentialManagement?.score||0)+sbd('Entry Security',a.entryPointSecurity?.score||0)+sbd('Auditability',a.auditability?.score||0)+sbd('Visitor Mgmt',a.visitorManagement?.score||0);
@@ -1626,7 +1632,474 @@ async function sendChat(page) {
   container.scrollTop=container.scrollHeight;
 }
 
-function exportReport(){alert('Production export would generate a branded PDF report combining all four section assessments:\n\n\u2022 CPTED environmental analysis with annotated photos, tagged by level\n\u2022 CCTV system review with per-level coverage maps and per-camera scores\n\u2022 Guard program evaluation with per-zone coverage schedules and cost benchmarking\n\u2022 Access control assessment with per-zone door security and credential audit recommendations\n\u2022 Consolidated risk score and prioritised action plan');}
+// ═══════════════════════════════════════════
+// PDF REPORT EXPORT
+// Self-contained binary PDF builder — no external libraries. Embeds zone/camera
+// photos as JPEG and lays out all four section assessments plus a cover page.
+// ═══════════════════════════════════════════
+
+const HELVETICA_W = {' ':278,'!':278,'"':355,'#':556,'$':556,'%':889,'&':667,"'":222,'(':333,')':333,'*':389,'+':584,',':278,'-':333,'.':278,'/':278,'0':556,'1':556,'2':556,'3':556,'4':556,'5':556,'6':556,'7':556,'8':556,'9':556,':':278,';':278,'<':584,'=':584,'>':584,'?':556,'@':1015,'A':667,'B':667,'C':722,'D':722,'E':667,'F':611,'G':778,'H':722,'I':278,'J':500,'K':667,'L':556,'M':833,'N':722,'O':778,'P':667,'Q':778,'R':722,'S':667,'T':611,'U':722,'V':667,'W':944,'X':667,'Y':667,'Z':611,'[':278,'\\':278,']':278,'^':469,'_':556,'`':222,'a':556,'b':556,'c':500,'d':556,'e':556,'f':278,'g':556,'h':556,'i':222,'j':222,'k':500,'l':222,'m':833,'n':556,'o':556,'p':556,'q':556,'r':333,'s':500,'t':278,'u':556,'v':500,'w':722,'x':500,'y':500,'z':500,'{':334,'|':260,'}':334,'~':584};
+
+function pdfParseJpegDims(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xFF || bytes[1] !== 0xD8) return null;
+  let i = 2;
+  while (i < bytes.length - 8) {
+    if (bytes[i] !== 0xFF) return null;
+    const marker = bytes[i + 1];
+    const isSOF = (marker >= 0xC0 && marker <= 0xC3) || (marker >= 0xC5 && marker <= 0xC7) || (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF);
+    if (isSOF) {
+      const h = (bytes[i + 5] << 8) | bytes[i + 6];
+      const w = (bytes[i + 7] << 8) | bytes[i + 8];
+      const components = bytes[i + 9];
+      return { w, h, components };
+    }
+    if (marker === 0xD8 || marker === 0xD9) { i += 2; continue; }
+    const segLen = (bytes[i + 2] << 8) | bytes[i + 3];
+    i += 2 + segLen;
+  }
+  return null;
+}
+
+// Re-encodes any image data URL to JPEG bytes via canvas (handles PNG/WebP uploads).
+function pdfDataUrlToJpegBytes(dataUrl) {
+  return new Promise((resolve) => {
+    if (!dataUrl) return resolve(null);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1000;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || !h) return resolve(null);
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const jpegUrl = canvas.toDataURL('image/jpeg', 0.82);
+        const b64 = jpegUrl.split(',')[1];
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        resolve(bytes);
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+}
+
+async function buildAssessmentPdf() {
+  const PW = 612, PH = 792, M = 54, CW = PW - 2 * M;
+  const PC = { ink:[20,22,26], inkDim:[90,96,105], inkFaint:[140,146,155], accent:[176,122,0], red:[200,60,55], yellow:[170,120,20], green:[45,130,70], rule:[220,222,228] };
+  const sevRGB = (s) => s==='critical'?PC.red : s==='warning'?PC.yellow : s==='good'?PC.green : PC.inkDim;
+  const scoreRGB = (v) => v>=75?PC.green : v>=50?PC.yellow : PC.red;
+
+  // Collect + convert all photos we might embed (CPTED zone photos + CCTV camera photos)
+  const cptedPhotoBytes = {};
+  for (const [zone, obj] of Object.entries(cptedImages)) {
+    const bytes = await pdfDataUrlToJpegBytes(obj.data);
+    if (bytes) { const d = pdfParseJpegDims(bytes); if (d) cptedPhotoBytes[zone] = { bytes, ...d }; }
+  }
+  const cctvPhotoBytes = {};
+  for (const cam of cctvCameras) {
+    if (!cam.img) continue;
+    const bytes = await pdfDataUrlToJpegBytes(cam.img);
+    if (bytes) { const d = pdfParseJpegDims(bytes); if (d) cctvPhotoBytes[cam.id] = { bytes, ...d }; }
+  }
+
+  const imageRefsPerPage = [];
+  let currentPageImageRefs = new Set();
+  let images = {}; // key -> {bytes,w,h,components}
+  let nextImgKey = 0;
+  const registerImage = (entry) => { const k = 'img' + (nextImgKey++); images[k] = entry; return k; };
+
+  const charW = (ch, bold) => { const w = HELVETICA_W[ch] != null ? HELVETICA_W[ch] : 500; return bold ? Math.round(w*1.05) : w; };
+  const measure = (str, size, bold) => { let t=0; for (const ch of str) t += charW(ch,bold); return (t/1000)*size; };
+  const sanitize = (s) => (s||'').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\u2013/g,'-').replace(/\u2014/g,'--').replace(/\u2026/g,'...').replace(/[^\x20-\x7E\n]/g,'');
+  const esc = (s) => s.replace(/\\/g,'\\\\').replace(/\(/g,'\\(').replace(/\)/g,'\\)');
+  const wrap = (str, maxW, size, bold) => {
+    const words = str.split(/\s+/).filter(Boolean);
+    const lines = []; let line = '';
+    for (const word of words) {
+      const test = line ? line + ' ' + word : word;
+      if (measure(test,size,bold) > maxW && line) { lines.push(line); line = word; } else line = test;
+    }
+    if (line) lines.push(line);
+    return lines.length ? lines : [''];
+  };
+
+  let pages = [], stream = '', y = M;
+  const flush = () => { pages.push(stream); imageRefsPerPage.push(currentPageImageRefs); stream=''; currentPageImageRefs=new Set(); y=M; };
+  const newPage = () => flush();
+  const need = (h) => { if (y + h > PH - M - 24) newPage(); };
+  const space = (h) => { y += h; };
+  const setFill = (rgb) => { stream += `${(rgb[0]/255).toFixed(3)} ${(rgb[1]/255).toFixed(3)} ${(rgb[2]/255).toFixed(3)} rg\n`; };
+  const setStroke = (rgb) => { stream += `${(rgb[0]/255).toFixed(3)} ${(rgb[1]/255).toFixed(3)} ${(rgb[2]/255).toFixed(3)} RG\n`; };
+  const drawRule = (color=PC.rule) => { need(6); setStroke(color); stream += `0.5 w ${M} ${(PH-y).toFixed(2)} m ${PW-M} ${(PH-y).toFixed(2)} l S\n`; y += 6; };
+  const line = (str, opts={}) => {
+    const { size=10, bold=false, italic=false, x=M, color=PC.ink } = opts;
+    const font = bold ? '/F2' : italic ? '/F3' : '/F1';
+    setFill(color);
+    const baseY = PH - y - size;
+    stream += `BT ${font} ${size} Tf ${x.toFixed(2)} ${baseY.toFixed(2)} Td (${esc(sanitize(str))}) Tj ET\n`;
+  };
+  const text = (str, opts={}) => {
+    const { size=10, bold=false, italic=false, x=M, leading=1.45, maxWidth=CW, color=PC.ink } = opts;
+    const font = bold ? '/F2' : italic ? '/F3' : '/F1';
+    const lines = wrap(sanitize(str), maxWidth, size, bold);
+    const lh = size * leading;
+    setFill(color);
+    for (const ln of lines) {
+      need(lh);
+      const baseY = PH - y - size;
+      stream += `BT ${font} ${size} Tf ${x.toFixed(2)} ${baseY.toFixed(2)} Td (${esc(ln)}) Tj ET\n`;
+      y += lh;
+    }
+  };
+  const drawImage = (key, x, topY, w, h) => {
+    if (!images[key]) return;
+    currentPageImageRefs.add(key);
+    const pdfY = PH - topY - h;
+    stream += `q ${w.toFixed(2)} 0 0 ${h.toFixed(2)} ${x.toFixed(2)} ${pdfY.toFixed(2)} cm /Im_${key} Do Q\n`;
+  };
+  const sectionHeader = (num, title, scoreVal) => {
+    space(6); need(46);
+    line(num, { size:11, italic:true, color:PC.accent, x:M });
+    line(title, { size:19, bold:true, x:M+30 });
+    if (scoreVal != null) {
+      const lbl = `${scoreVal}/100`;
+      const w = measure(lbl,16,true);
+      line(lbl, { size:16, bold:true, color:scoreRGB(scoreVal), x: PW-M-w });
+    }
+    y += 22;
+    drawRule();
+    space(8);
+  };
+  const embedPhoto = (photoEntry, maxH=200) => {
+    if (!photoEntry) return;
+    const key = registerImage(photoEntry);
+    const aspect = photoEntry.h / photoEntry.w;
+    let imgW = CW, imgH = imgW * aspect;
+    if (imgH > maxH) { imgH = maxH; imgW = imgH / aspect; }
+    need(imgH + 10);
+    const imgX = M + (CW - imgW) / 2;
+    drawImage(key, imgX, y, imgW, imgH);
+    setStroke(PC.rule);
+    stream += `0.5 w ${imgX.toFixed(2)} ${(PH-y-imgH).toFixed(2)} ${imgW.toFixed(2)} ${imgH.toFixed(2)} re S\n`;
+    y += imgH + 10;
+  };
+
+  // ===== COVER =====
+  const propName = document.getElementById('propNameInput')?.value || 'Commercial Property Assessment';
+  line('CONFIDENTIAL  \u2014  SECURITY ASSESSMENT', { size:8, bold:true, color:PC.accent });
+  y = M + 90;
+  const titleLines = wrap(sanitize(propName), CW, 30, true);
+  for (const ln of titleLines) { line(ln, { size:30, bold:true }); y += 36; }
+  y += 6;
+  drawRule();
+  space(16);
+
+  const today = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
+  const overall = [scores.cpted,scores.cctv,scores.guard,scores.access].filter(v=>v!==null);
+  const overallAvg = overall.length ? Math.round(overall.reduce((a,b)=>a+b,0)/overall.length) : null;
+  const colW = CW/4;
+  const baseY = y;
+  line('DATE', { size:7, color:PC.inkFaint, x:M });
+  line('OVERALL SCORE', { size:7, color:PC.inkFaint, x:M+colW });
+  line('LEVELS', { size:7, color:PC.inkFaint, x:M+colW*2 });
+  line('SECTIONS COMPLETE', { size:7, color:PC.inkFaint, x:M+colW*3 });
+  y = baseY + 15;
+  line(today, { size:12, bold:true, x:M });
+  line(overallAvg!=null ? `${overallAvg}/100` : 'N/A', { size:12, bold:true, color: overallAvg!=null?scoreRGB(overallAvg):PC.ink, x:M+colW });
+  line(propertyLevels.join(', '), { size:11, bold:true, x:M+colW*2 });
+  line(`${overall.length} / 4`, { size:12, bold:true, x:M+colW*3 });
+  y = baseY + 40;
+
+  space(10);
+  line('SECTION SCORES', { size:8, bold:true, color:PC.inkFaint });
+  y += 14;
+  const sectionLabels = [['CPTED & Environment',scores.cpted],['CCTV System',scores.cctv],['Guard Services',scores.guard],['Access Control',scores.access]];
+  for (const [label,val] of sectionLabels) {
+    need(20);
+    line(label, { size:11, x:M });
+    const lbl = val!=null ? `${val}/100` : 'Not assessed';
+    const w = measure(lbl,11,true);
+    line(lbl, { size:11, bold:true, color: val!=null?scoreRGB(val):PC.inkFaint, x: PW-M-w });
+    y += 18;
+  }
+
+  // ===== SECTION I — CPTED =====
+  if (resultData.cpted) {
+    newPage();
+    const a = resultData.cpted;
+    sectionHeader('I', 'CPTED & Environmental Assessment', a.overallScore);
+    text(a.summary || '', { size:11, color:PC.inkDim, leading:1.55 });
+    space(10);
+    const breakdown = [['Lighting',a.lighting?.score],['Natural Surveillance',a.naturalSurveillance?.score],['Territorial Reinforcement',a.territorialReinforcement?.score],['Access Management',a.accessManagement?.score]];
+    for (const [lbl,val] of breakdown) {
+      if (val==null) continue;
+      need(16);
+      line(lbl, { size:9, color:PC.inkDim, x:M });
+      line(String(val), { size:9, bold:true, color:scoreRGB(val), x:M+220 });
+      y += 14;
+    }
+    space(8);
+    if (a.findings?.length) {
+      need(14); line('FINDINGS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const f of a.findings) {
+        need(50);
+        const sevLbl = (f.severity||'').toUpperCase();
+        line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
+        line(`${f.area||''} \u2014 ${f.title||''}`, { size:11, bold:true, x:M+measure(sevLbl,8,true)+10 });
+        y += 14;
+        text(f.detail||'', { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
+        space(6);
+      }
+    }
+    // Zone photos, tagged by level
+    const zonesWithPhotos = Object.keys(cptedPhotoBytes);
+    if (zonesWithPhotos.length) {
+      newPage();
+      line('CPTED ZONE PHOTOS', { size:8, bold:true, color:PC.inkFaint }); y += 14;
+      for (const zone of zonesWithPhotos) {
+        const label = (CPTED_LABELS[zone] || zone) + '  \u2014  ' + (cptedImages[zone]?.level || '');
+        need(24);
+        line(label, { size:10, bold:true }); y += 16;
+        embedPhoto(cptedPhotoBytes[zone], 220);
+        space(8);
+      }
+    }
+    if (a.recommendations?.length) {
+      need(14); line('RECOMMENDATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      a.recommendations.forEach((r,i) => { text(`${i+1}. ${r}`, { size:10, leading:1.5 }); space(3); });
+    }
+  }
+
+  // ===== SECTION II — CCTV =====
+  const analyzedCams = cctvCameras.filter(c=>c.analysis);
+  if (analyzedCams.length) {
+    newPage();
+    sectionHeader('II', 'CCTV System Analysis', scores.cctv);
+    text(`${analyzedCams.length} of ${cctvCameras.length} cameras analyzed.`, { size:10, color:PC.inkDim });
+    space(10);
+    for (const cam of analyzedCams) {
+      const a = cam.analysis;
+      need(40);
+      line(`${cam.name}  \u2014  ${cam.level}`, { size:12, bold:true, x:M });
+      const lbl = `${a.overallScore}/100`;
+      line(lbl, { size:12, bold:true, color:scoreRGB(a.overallScore), x: PW-M-measure(lbl,12,true) });
+      y += 16;
+      if (cctvPhotoBytes[cam.id]) embedPhoto(cctvPhotoBytes[cam.id], 180);
+      text(a.summary || '', { size:9.5, color:PC.inkDim, leading:1.5 });
+      space(4);
+      (a.vulnerabilities||[]).forEach(v => {
+        need(30);
+        line((v.severity||'').toUpperCase(), { size:8, bold:true, color:sevRGB(v.severity==='critical'?'critical':v.severity==='warning'?'warning':'good'), x:M });
+        text(`${v.issue||''}: ${v.detail||''}`, { size:9.5, x:M+8, maxWidth:CW-8, leading:1.5 });
+        space(2);
+      });
+      space(6);
+      drawRule();
+      space(6);
+    }
+  }
+
+  // ===== SECTION III — GUARD =====
+  if (resultData.guard) {
+    newPage();
+    const a = resultData.guard;
+    sectionHeader('III', 'Security Guard Program', a.overallScore);
+    text(a.summary || '', { size:11, color:PC.inkDim, leading:1.55 });
+    space(10);
+    const gBreak = [['Coverage',a.coverage?.score],['Accountability',a.accountability?.score],['Training',a.training?.score],['Cost Effectiveness',a.costEffectiveness?.score]];
+    for (const [lbl,val] of gBreak) {
+      if (val==null) continue;
+      need(16);
+      line(lbl, { size:9, color:PC.inkDim, x:M });
+      line(String(val), { size:9, bold:true, color:scoreRGB(val), x:M+220 });
+      y += 14;
+    }
+    space(8);
+    if (guardZones?.length) {
+      need(14); line('COVERAGE BY ZONE', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const z of guardZones) {
+        need(28);
+        line(z.name, { size:10, bold:true }); y += 13;
+        text(`Weekday: ${z.dayStart}-${z.dayEnd} / ${z.nightStart}-${z.nightEnd}    Weekend: Sat ${z.satStart} / Sun ${z.sunStart}`, { size:9, color:PC.inkDim, leading:1.4 });
+        space(4);
+      }
+      space(6);
+    }
+    if (a.findings?.length) {
+      need(14); line('FINDINGS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const f of a.findings) {
+        need(50);
+        const sevLbl = (f.severity||'').toUpperCase();
+        line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
+        line(`${f.area||''} \u2014 ${f.title||''}`, { size:11, bold:true, x:M+measure(sevLbl,8,true)+10 });
+        y += 14;
+        text(f.detail||'', { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
+        space(6);
+      }
+    }
+    if (a.costBenchmark) {
+      need(30);
+      const cb = a.costBenchmark;
+      line('COST BENCHMARK', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      text(`Current: $${cb.monthlyRate?.toLocaleString?.()||cb.monthlyRate}/mo   Market range (${cb.city||''}): $${cb.marketRangeLow?.toLocaleString?.()||cb.marketRangeLow}\u2013$${cb.marketRangeHigh?.toLocaleString?.()||cb.marketRangeHigh}`, { size:9.5, leading:1.5 });
+      text(cb.assessment || '', { size:9.5, color:PC.inkDim, leading:1.5 });
+      space(6);
+    }
+    if (a.recommendations?.length) {
+      need(14); line('RECOMMENDATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      a.recommendations.forEach((r,i) => { text(`${i+1}. ${r}`, { size:10, leading:1.5 }); space(3); });
+    }
+  }
+
+  // ===== SECTION IV — ACCESS CONTROL =====
+  if (resultData.access) {
+    newPage();
+    const a = resultData.access;
+    sectionHeader('IV', 'Access Control System', a.overallScore);
+    text(a.summary || '', { size:11, color:PC.inkDim, leading:1.55 });
+    space(10);
+    const acBreak = [['Credential Management',a.credentialManagement?.score],['Entry Point Security',a.entryPointSecurity?.score],['Auditability',a.auditability?.score],['Visitor Management',a.visitorManagement?.score]];
+    for (const [lbl,val] of acBreak) {
+      if (val==null) continue;
+      need(16);
+      line(lbl, { size:9, color:PC.inkDim, x:M });
+      line(String(val), { size:9, bold:true, color:scoreRGB(val), x:M+220 });
+      y += 14;
+    }
+    space(8);
+    if (acZones?.length) {
+      need(14); line('ACCESS BY ZONE', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const z of acZones) {
+        need(20);
+        line(z.name, { size:10, bold:true }); y += 13;
+        text(`Entry: ${z.mainSec}   After-hours: ${z.afterHours}   Visitor: ${z.visitor}   Sensitive area: ${z.sensitive}   Alarms: ${z.alarms}`, { size:9, color:PC.inkDim, leading:1.4 });
+        space(4);
+      }
+      space(6);
+    }
+    if (a.findings?.length) {
+      need(14); line('FINDINGS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const f of a.findings) {
+        need(50);
+        const sevLbl = (f.severity||'').toUpperCase();
+        line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
+        line(`${f.area||''} \u2014 ${f.title||''}`, { size:11, bold:true, x:M+measure(sevLbl,8,true)+10 });
+        y += 14;
+        text(f.detail||'', { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
+        space(6);
+      }
+    }
+    if (a.recommendations?.length) {
+      need(14); line('RECOMMENDATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      a.recommendations.forEach((r,i) => { text(`${i+1}. ${r}`, { size:10, leading:1.5 }); space(3); });
+    }
+  }
+
+  // ===== DISCLAIMER =====
+  newPage();
+  line('NOTICE', { size:8, bold:true, color:PC.accent });
+  y += 16;
+  line('About This Report', { size:18, bold:true });
+  y += 24;
+  drawRule();
+  space(8);
+  text('This assessment was generated using AI-assisted analysis of photos and information provided by the assessor and is intended as a professional security consulting aid, not a certified or guaranteed evaluation. It does not replace an on-site inspection by a licensed security consultant, and findings reflect only what was visible in the images or described at the time of assessment. Conditions may have changed since this report was generated.', { size:9.5, color:PC.inkDim, leading:1.65 });
+
+  flush();
+
+  // Footer + page numbers
+  const totalPages = pages.length;
+  for (let i = 0; i < totalPages; i++) {
+    const pn = `${i+1} / ${totalPages}`;
+    const pnW = measure(pn,7,false);
+    let footer = '';
+    footer += `${(PC.inkFaint[0]/255).toFixed(3)} ${(PC.inkFaint[1]/255).toFixed(3)} ${(PC.inkFaint[2]/255).toFixed(3)} rg\n`;
+    footer += `BT /F1 7 Tf ${(PW/2-pnW/2).toFixed(2)} 20 Td (${pn}) Tj ET\n`;
+    footer += `BT /F1 7 Tf ${M} 20 Td (SECUREVIEW AI \u2014 CONFIDENTIAL) Tj ET\n`;
+    pages[i] = pages[i] + footer;
+  }
+
+  // ===== Binary PDF assembly =====
+  const imageList = Object.keys(images);
+  const N = totalPages;
+  const fontStart = 3 + 2*N;
+  const imageStart = 6 + 2*N;
+  const imageObjNums = {};
+  imageList.forEach((key,idx) => { imageObjNums[key] = imageStart + idx; });
+
+  const textObjects = [];
+  textObjects.push(`<< /Type /Catalog /Pages 2 0 R >>`);
+  const kids = Array.from({length:N},(_,i)=>`${3+i} 0 R`).join(' ');
+  textObjects.push(`<< /Type /Pages /Kids [${kids}] /Count ${N} >>`);
+  for (let i = 0; i < N; i++) {
+    const contentNum = 3 + N + i;
+    const refs = imageRefsPerPage[i] || new Set();
+    let xobjDict = '';
+    if (refs.size > 0) { xobjDict = ` /XObject << ${[...refs].map(k=>`/Im_${k} ${imageObjNums[k]} 0 R`).join(' ')} >>`; }
+    textObjects.push(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PW} ${PH}] /Contents ${contentNum} 0 R /Resources << /Font << /F1 ${fontStart} 0 R /F2 ${fontStart+1} 0 R /F3 ${fontStart+2} 0 R >>${xobjDict} >> >>`);
+  }
+  for (let i = 0; i < N; i++) { textObjects.push(`<< /Length ${pages[i].length} >>\nstream\n${pages[i]}endstream`); }
+  textObjects.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>`);
+  textObjects.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>`);
+  textObjects.push(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique /Encoding /WinAnsiEncoding >>`);
+
+  const chunks = []; let totalLen = 0;
+  const writeAscii = (s) => { const b=new Uint8Array(s.length); for(let i=0;i<s.length;i++) b[i]=s.charCodeAt(i)&0xFF; chunks.push(b); totalLen+=b.length; };
+  const writeBytes = (bytes) => { chunks.push(bytes); totalLen+=bytes.length; };
+
+  const offsets = [];
+  writeAscii('%PDF-1.4\n');
+  writeBytes(new Uint8Array([0x25,0xE2,0xE3,0xCF,0xD3,0x0A]));
+  for (let i = 0; i < textObjects.length; i++) { offsets.push(totalLen); writeAscii(`${i+1} 0 obj\n${textObjects[i]}\nendobj\n`); }
+  for (const key of imageList) {
+    const img = images[key];
+    const colorSpace = img.components===1 ? '/DeviceGray' : '/DeviceRGB';
+    offsets.push(totalLen);
+    writeAscii(`${imageObjNums[key]} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${img.w} /Height ${img.h} /ColorSpace ${colorSpace} /BitsPerComponent 8 /Filter /DCTDecode /Length ${img.bytes.length} >>\nstream\n`);
+    writeBytes(img.bytes);
+    writeAscii(`\nendstream\nendobj\n`);
+  }
+  const totalObjects = textObjects.length + imageList.length;
+  const xrefOffset = totalLen;
+  writeAscii(`xref\n0 ${totalObjects+1}\n0000000000 65535 f \n`);
+  for (const off of offsets) writeAscii(String(off).padStart(10,'0') + ' 00000 n \n');
+  writeAscii(`trailer\n<< /Size ${totalObjects+1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`);
+
+  const out = new Uint8Array(totalLen);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+async function exportReport(evt) {
+  const btn = document.getElementById('exportReportBtn') || evt?.target?.closest?.('button');
+  const originalText = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = 'BUILDING PDF...'; }
+  try {
+    const bytes = await buildAssessmentPdf();
+    const blob = new Blob([bytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const propName = (document.getElementById('propNameInput')?.value || 'property-assessment').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'property-assessment';
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secureview-${propName}-${new Date().toISOString().slice(0,10)}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) {
+    console.error('PDF export failed:', e);
+    alert('Report generation failed: ' + e.message + '\n\nCheck the browser console (F12) for detail.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = originalText; }
+  }
+}
 function resetAll(){if(confirm('Reset all assessment data?')){location.reload();}}
 
 // Init
