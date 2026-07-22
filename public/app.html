@@ -62,6 +62,12 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .zone-icon{font-size:20px}
 .zone-label{font-size:11px;font-weight:600;color:var(--white)}
 .zone-hint{font-size:9px;color:var(--muted)}
+.zone-rename-input{width:100%;background:transparent;border:1px solid transparent;color:var(--white);font-size:10px;font-family:'IBM Plex Sans',sans-serif;padding:2px 4px;border-radius:3px;text-align:center;margin-top:2px;position:relative;z-index:2}
+.zone-rename-input:hover{border-color:var(--border)}
+.zone-rename-input:focus{border-color:var(--accent);outline:none;background:var(--dark)}
+.cctv-name-input{background:transparent;border:1px solid transparent;color:var(--white);font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;padding:2px 4px;border-radius:3px;flex:1;min-width:80px}
+.cctv-name-input:hover{border-color:var(--border)}
+.cctv-name-input:focus{border-color:var(--accent);outline:none;background:var(--panel)}
 .preview-img{width:100%;height:68px;object-fit:cover;border-radius:3px;margin-bottom:3px}
 .img-ok{font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1px;color:var(--green)}
 .zone-level-select{width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);font-size:9px;font-family:'IBM Plex Mono',monospace;padding:3px 4px;border-radius:3px;margin-top:3px;position:relative;z-index:2}
@@ -374,9 +380,20 @@ select.form-input option{background:var(--dark)}
       </div>
     </div>
 
-    <div style="display:flex;gap:8px;align-items:center;margin-top:.8rem">
+    <div style="display:flex;gap:8px;align-items:center;margin-top:.8rem;flex-wrap:wrap">
       <button class="add-slot-btn" onclick="addCptedSlot()">+ ADD ZONE</button>
       <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="cptedUploadCount">0 of 8 zones uploaded</span>
+    </div>
+
+    <div style="margin-top:.8rem;padding:.8rem;background:var(--dark);border:1px solid var(--border);border-radius:6px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">BULK UPLOAD — for buildings with many levels or entry/exit points, add many photos at once</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="zone-level-select" id="bulkCptedLevel" style="width:auto;min-width:110px;padding:6px 8px"></select>
+        <button class="add-slot-btn" onclick="triggerBulkCptedUpload()">+ BULK UPLOAD PHOTOS</button>
+        <input type="file" accept="image/*" multiple id="bulkCptedFileInput" style="display:none" onchange="handleBulkCptedUpload(this)">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="bulkCptedStatus"></span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">Pick the level first, then select as many photos as you like — each becomes its own zone tagged to that level. Re-run bulk upload per level as needed.</div>
     </div>
   </div>
 
@@ -428,6 +445,17 @@ select.form-input option{background:var(--dark)}
     <div style="display:flex;gap:8px;align-items:center;margin-top:.8rem">
       <button class="add-slot-btn" onclick="addCctvSlot()">+ ADD CAMERA</button>
       <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="cctvUploadCount">0 of 4 cameras uploaded</span>
+    </div>
+
+    <div style="margin-top:.8rem;padding:.8rem;background:var(--dark);border:1px solid var(--border);border-radius:6px">
+      <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">BULK UPLOAD — add many camera photos at once, tagged to one level</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="zone-level-select" id="bulkCctvLevel" style="width:auto;min-width:110px;padding:6px 8px"></select>
+        <button class="add-slot-btn" onclick="triggerBulkCctvUpload()">+ BULK UPLOAD CAMERAS</button>
+        <input type="file" accept="image/*" multiple id="bulkCctvFileInput" style="display:none" onchange="handleBulkCctvUpload(this)">
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="bulkCctvStatus"></span>
+      </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:6px">Pick the level first, then select as many camera photos as you like — each becomes its own camera card tagged to that level.</div>
     </div>
   </div>
 
@@ -775,6 +803,33 @@ const MODEL = "claude-sonnet-5"; // kept for reference; the model is now set ser
 
 function sc(v){ return v>=75?'var(--green)':v>=50?'var(--yellow)':'var(--red)'; }
 function getMedia(d){ if(d.includes('image/png'))return'image/png'; if(d.includes('image/webp'))return'image/webp'; return'image/jpeg'; }
+
+// Resize + re-encode any uploaded photo to a capped JPEG before storing/sending.
+// This exists because Vercel serverless functions reject requests over ~4.5MB —
+// with 8-12+ full-resolution phone photos bundled into one CPTED analyze call,
+// the raw base64 payload blows past that limit. Compressing on upload keeps
+// each photo small (typically 100-400KB) so even a dozen zones fit comfortably.
+function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || !h) return resolve(dataUrl); // fallback: use original if dimensions unreadable
+        if (w > h && w > maxDim) { h = Math.round(h*maxDim/w); w = maxDim; }
+        else if (h > maxDim) { w = Math.round(w*maxDim/h); h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const out = canvas.toDataURL('image/jpeg', quality);
+        resolve(out && out.startsWith('data:image') ? out : dataUrl);
+      } catch (e) { resolve(dataUrl); } // fallback: use original on any error
+    };
+    img.onerror = () => resolve(dataUrl); // fallback: use original if decode fails
+    img.src = dataUrl;
+  });
+}
 function escAttr(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
 
 // ═══════════════════════════════════════════
@@ -834,6 +889,14 @@ function refreshAllLevelSelects() {
     if(!sel) return;
     sel.innerHTML = propertyLevels.map(lv=>`<option value="${escAttr(lv)}" ${lv===cam.level?'selected':''}>${escAttr(lv)}</option>`).join('');
   });
+  // Bulk-upload level pickers (CPTED + CCTV) — preserve current selection if still valid
+  ['bulkCptedLevel','bulkCctvLevel'].forEach(id => {
+    const sel = document.getElementById(id);
+    if(!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = propertyLevels.map(lv=>`<option value="${escAttr(lv)}" ${lv===prev?'selected':''}>${escAttr(lv)}</option>`).join('');
+    if (!propertyLevels.includes(prev)) sel.value = propertyLevels[0];
+  });
 }
 
 function setCptedLevel(zone, level) {
@@ -862,24 +925,38 @@ let dynamicCptedCount = 0;
 
 function triggerCpted(e, z){ if(e) e.stopPropagation(); document.getElementById('cf-'+z).click(); }
 
+function applyCptedZonePreview(zone, compressedDataUrl) {
+  cptedImages[zone] = cptedImages[zone] || {};
+  cptedImages[zone].data = compressedDataUrl;
+  const el = document.getElementById('cz-'+zone);
+  if (!el) return;
+  el.classList.add('has-image');
+  const label = CPTED_LABELS[zone] || zone;
+  el.innerHTML = `<img src="${compressedDataUrl}" class="preview-img"><div class="img-ok">&#10003; CAPTURED</div><input type="text" class="zone-rename-input" value="${escAttr(label)}" onclick="event.stopPropagation()" onchange="renameCptedZone('${zone}',this.value)" title="Click to rename this zone"><select class="zone-level-select" data-dynamic="${CPTED_LABELS[zone]&&!zone.startsWith('custom')?'0':'1'}" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+}
+
+function renameCptedZone(zone, newName) {
+  const trimmed = (newName || '').trim();
+  if (trimmed) CPTED_LABELS[zone] = trimmed;
+}
+
 function handleCptedUpload(input, zone) {
   const file = input.files[0]; if(!file) return;
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
+    const compressed = await compressImageDataUrl(e.target.result);
     const levelSel = document.getElementById('czl-'+zone);
     const level = (levelSel && levelSel.value) || propertyLevels[0];
-    cptedImages[zone] = {data: e.target.result, level: level};
-    const el = document.getElementById('cz-'+zone);
-    el.classList.add('has-image');
-    const label = CPTED_LABELS[zone] || zone;
-    el.innerHTML = `<img src="${e.target.result}" class="preview-img"><div class="img-ok">&#10003; CAPTURED</div><div class="zone-hint">${label}</div><select class="zone-level-select" data-dynamic="${CPTED_LABELS[zone]?'0':'1'}" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+    cptedImages[zone] = {data: compressed, level: level};
+    applyCptedZonePreview(zone, compressed);
     refreshAllLevelSelects();
     updateCptedCount();
   };
   reader.readAsDataURL(file);
 }
 
-function addCptedSlot() {
+// Creates a new empty custom-zone tile (DOM only, no photo yet) and returns its zone key.
+function createCptedZoneSlot(hintText) {
   dynamicCptedCount++;
   const zone = 'custom'+dynamicCptedCount;
   CPTED_LABELS[zone] = 'Custom area '+dynamicCptedCount;
@@ -887,9 +964,48 @@ function addCptedSlot() {
   const el = document.createElement('div');
   el.className = 'upload-zone'; el.id = 'cz-'+zone;
   el.setAttribute('onclick', `triggerCpted(event,'${zone}')`);
-  el.innerHTML = `<span class="zone-icon">&#10133;</span><div class="zone-label">Custom Area ${dynamicCptedCount}</div><div class="zone-hint">e.g. ramp, stairwell, vertical circulation</div><select class="zone-level-select" data-dynamic="1" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+  el.innerHTML = `<span class="zone-icon">&#10133;</span><div class="zone-label">Custom Area ${dynamicCptedCount}</div><div class="zone-hint">${hintText || 'e.g. ramp, stairwell, vertical circulation'}</div><select class="zone-level-select" data-dynamic="1" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
   grid.appendChild(el);
+  return zone;
+}
+
+function addCptedSlot() {
+  createCptedZoneSlot();
   refreshAllLevelSelects();
+}
+
+// Bulk upload — pick a level once, then select any number of photos at once.
+// Each photo becomes its own custom zone, tagged to the chosen level, so a
+// 12-level building with many entry/exit points doesn't require clicking
+// "+ ADD ZONE" one photo at a time.
+function triggerBulkCptedUpload() { document.getElementById('bulkCptedFileInput').click(); }
+
+async function handleBulkCptedUpload(input) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  const level = document.getElementById('bulkCptedLevel')?.value || propertyLevels[0];
+  const statusEl = document.getElementById('bulkCptedStatus');
+  let done = 0;
+  if (statusEl) statusEl.textContent = `Uploading 0/${files.length}...`;
+  for (const file of files) {
+    const zone = createCptedZoneSlot(`Bulk upload \u2014 ${level}`);
+    await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async e => {
+        const compressed = await compressImageDataUrl(e.target.result);
+        cptedImages[zone] = {data: compressed, level: level};
+        applyCptedZonePreview(zone, compressed);
+        done++;
+        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...`;
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  refreshAllLevelSelects();
+  updateCptedCount();
+  if (statusEl) statusEl.textContent = `Added ${files.length} photo(s) to ${level}.`;
+  input.value = ''; // allow re-selecting the same files later if needed
 }
 
 function updateCptedCount() {
@@ -899,64 +1015,133 @@ function updateCptedCount() {
   document.getElementById('analyzeCptedBtn').disabled = n === 0;
 }
 
+// CPTED analysis runs in two passes, same pattern as CCTV's per-camera analysis:
+//   Pass 1 — one small request PER ZONE (one photo each), so uploading 10 or 100
+//            zones never risks the request-size limit that bundling them all
+//            into one request used to hit.
+//   Pass 2 — a single lightweight TEXT-ONLY synthesis call (no images) that reads
+//            all the per-zone JSON results and produces the overall score/summary,
+//            matching the schema the rest of the app (and PDF export) expects.
+let cptedZoneResults = {}; // zone -> per-zone AI result
+
+function buildCptedZonePrompt(zone, obj, multiLevel) {
+  const label = CPTED_LABELS[zone] || zone;
+  return `You are a professional CPTED (Crime Prevention Through Environmental Design) security consultant. You are looking at ONE photo from a single zone of a larger commercial property assessment.
+
+Zone: ${label} (${obj.level})
+${multiLevel ? `Note: this property has multiple levels (${propertyLevels.join(', ')}). If this zone photo shows vertical circulation (ramps, stairwells) or a level transition, weight your findings toward blind corners, sightlines, and unrestricted movement between levels.` : ''}
+
+Evaluate ONLY what is visible in this photo against the four CPTED principles (natural surveillance, natural access control, territorial reinforcement, maintenance). Respond ONLY with valid JSON (no markdown, no backticks):
+{
+  "zone_score": <0-100>,
+  "principle_scores": {"lighting": <0-100>, "naturalSurveillance": <0-100>, "territorialReinforcement": <0-100>, "accessManagement": <0-100>},
+  "findings": [{"severity": "<critical|warning|good>", "title": "<short title>", "detail": "<2 sentences>"}],
+  "summary": "<1-2 sentence summary of this zone>"
+}`;
+}
+
+async function analyzeCptedZone(zone, obj, multiLevel) {
+  const el = document.getElementById('cz-'+zone);
+  const image = { type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]} };
+  const prompt = buildCptedZonePrompt(zone, obj, multiLevel);
+  try {
+    const resp = await fetch(API, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({max_tokens:700, content:[image, {type:'text', text:prompt}]})
+    });
+    const data = await resp.json();
+    if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
+    let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
+    raw = raw.replace(/```json|```/g,'').trim();
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch(e) {
+      console.warn('CPTED zone', zone, ': could not parse AI response as JSON. Raw:', raw);
+      parsed = { zone_score:55, principle_scores:{lighting:55,naturalSurveillance:55,territorialReinforcement:55,accessManagement:55}, findings:[], summary:'Could not be read; on-site verification recommended for this zone.' };
+    }
+    cptedZoneResults[zone] = parsed;
+  } catch(e) {
+    console.warn('CPTED zone', zone, 'failed:', e.message);
+    cptedZoneResults[zone] = { zone_score:55, principle_scores:{lighting:55,naturalSurveillance:55,territorialReinforcement:55,accessManagement:55}, findings:[{severity:'warning',title:'Zone analysis failed',detail:e.message}], summary:'Analysis failed for this zone; on-site verification recommended.' };
+  }
+  if (el) { el.classList.remove('analyzing'); el.classList.add('analyzed'); }
+}
+
+// Runs async tasks with limited concurrency so we don't fire 60+ simultaneous
+// requests at once (which risks rate limits) while still being much faster
+// than one-at-a-time for large photo sets.
+async function runWithConcurrency(items, worker, concurrency, onProgress) {
+  let idx = 0, done = 0;
+  async function next() {
+    while (idx < items.length) {
+      const myIdx = idx++;
+      await worker(items[myIdx], myIdx);
+      done++;
+      if (onProgress) onProgress(done, items.length);
+    }
+  }
+  const workers = Array.from({length: Math.min(concurrency, items.length)}, next);
+  await Promise.all(workers);
+}
+
 async function analyzeCpted() {
   const uploaded = Object.entries(cptedImages);
   if(!uploaded.length) return;
   const btn = document.getElementById('analyzeCptedBtn');
-  btn.disabled = true; btn.textContent = 'ANALYZING...';
+  btn.disabled = true;
+  btn.textContent = `ANALYZING 0/${uploaded.length}...`;
 
-  // Mark zones as analyzing
   uploaded.forEach(([zone]) => {
     const el = document.getElementById('cz-'+zone);
     if(el) el.classList.add('analyzing');
   });
 
-  const images = uploaded.map(([zone, obj]) => ({
-    type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]}
-  }));
-
-  const zoneDesc = uploaded.map(([z,obj])=>`${CPTED_LABELS[z]||z} (${obj.level})`).join(', ');
   const multiLevel = propertyLevels.length > 1;
+  cptedZoneResults = {};
 
-  const prompt = `You are a professional CPTED (Crime Prevention Through Environmental Design) security consultant assessing a commercial property.
+  try {
+    await runWithConcurrency(uploaded, async ([zone, obj]) => {
+      await analyzeCptedZone(zone, obj, multiLevel);
+    }, 3, (done, total) => { btn.textContent = `ANALYZING ${done}/${total}...`; });
 
-You have been provided ${uploaded.length} property photo(s) covering: ${zoneDesc}.
-${multiLevel ? `This is a multi-level property with these levels: ${propertyLevels.join(', ')}. Pay particular attention to vertical circulation (ramps, stairwells) and level-to-level transitions as CPTED risk points — blind corners, poor sightlines, and unrestricted bleed between levels are common failure points in multi-level properties.` : ''}
+    btn.textContent = 'SYNTHESIZING...';
 
-Evaluate the overall CPTED posture of this property and respond ONLY with valid JSON (no markdown, no backticks):
+    // Pass 2: text-only synthesis across all per-zone results. No images in this
+    // request at all, so it's tiny regardless of how many zones were analyzed.
+    const zoneSummaryForSynthesis = uploaded.map(([zone,obj]) => ({
+      zone: CPTED_LABELS[zone] || zone, level: obj.level, ...cptedZoneResults[zone]
+    }));
+    const synthPrompt = `You are a senior CPTED security consultant preparing the executive summary for a commercial property assessment, based on ${uploaded.length} zone-level findings already collected by a field assessor.
+
+ZONE FINDINGS:
+${JSON.stringify(zoneSummaryForSynthesis)}
+
+Synthesize these into one overall assessment. Respond ONLY with valid JSON (no markdown, no backticks):
 {
   "overallScore": <0-100>,
   "lighting": {"score": <0-100>, "assessment": "<1 sentence>"},
   "naturalSurveillance": {"score": <0-100>, "assessment": "<1 sentence>"},
   "territorialReinforcement": {"score": <0-100>, "assessment": "<1 sentence>"},
   "accessManagement": {"score": <0-100>, "assessment": "<1 sentence>"},
-  "findings": [
-    {"severity": "<critical|warning|good>", "area": "<area name>", "title": "<short title>", "detail": "<2 sentences>"}
-  ],
+  "findings": [{"severity": "<critical|warning|good>", "area": "<zone name>", "title": "<short title>", "detail": "<2 sentences>"}],
   "recommendations": ["<specific actionable recommendation 1>", "<recommendation 2>", "<recommendation 3>"],
-  "summary": "<3-4 sentence professional CPTED assessment summary>"
+  "summary": "<3-4 sentence professional CPTED assessment summary covering the whole property>"
 }`;
 
-  try {
     const resp = await fetch(API, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({max_tokens:2000,
-        content:[...images, {type:'text', text:prompt}]})
+      body: JSON.stringify({max_tokens:2000, content:synthPrompt})
     });
     const data = await resp.json();
-    if (!resp.ok || data.error) {
-      throw new Error(data.error || data.error?.message || `Server returned HTTP ${resp.status}`);
-    }
+    if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     raw = raw.replace(/```json|```/g,'').trim();
     let parsed;
-    try{
-      parsed=JSON.parse(raw);
-    }catch(e){
-      console.warn('CPTED: could not parse AI response as JSON. Raw response was:', raw);
-      console.warn('This usually means the response was truncated (increase max_tokens) or the model added extra text outside the JSON.');
-      alert('CPTED analysis returned a response that could not be read (possibly truncated). Showing placeholder results below. Check the browser console (F12) to see the raw response.');
-      parsed=fallbackCpted();
+    try { parsed = JSON.parse(raw); }
+    catch(e) {
+      console.warn('CPTED synthesis: could not parse AI response as JSON. Raw:', raw);
+      alert('CPTED synthesis returned a response that could not be read. Showing a score averaged from per-zone results instead. Check the console (F12) for detail.');
+      parsed = synthesizeCptedFallback(zoneSummaryForSynthesis);
     }
     renderCptedResults(parsed);
   } catch(e) {
@@ -969,6 +1154,28 @@ Evaluate the overall CPTED posture of this property and respond ONLY with valid 
     if(el){ el.classList.remove('analyzing'); el.classList.add('analyzed'); }
   });
   btn.textContent = 'RE-ANALYZE'; btn.disabled = false;
+}
+
+// If the synthesis call itself fails to parse, build a reasonable overall
+// picture just by averaging the already-successful per-zone results —
+// better than falling all the way back to generic placeholder text.
+function synthesizeCptedFallback(zoneResults) {
+  const avg = (key) => {
+    const vals = zoneResults.map(z=>z.principle_scores?.[key]).filter(v=>typeof v==='number');
+    return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : 55;
+  };
+  const overall = Math.round(zoneResults.reduce((s,z)=>s+(z.zone_score||55),0)/Math.max(zoneResults.length,1));
+  const findings = zoneResults.flatMap(z => (z.findings||[]).map(f=>({severity:f.severity,area:z.zone,title:f.title,detail:f.detail})));
+  return {
+    overallScore: overall,
+    lighting: {score:avg('lighting'), assessment:'Averaged from per-zone results.'},
+    naturalSurveillance: {score:avg('naturalSurveillance'), assessment:'Averaged from per-zone results.'},
+    territorialReinforcement: {score:avg('territorialReinforcement'), assessment:'Averaged from per-zone results.'},
+    accessManagement: {score:avg('accessManagement'), assessment:'Averaged from per-zone results.'},
+    findings: findings.slice(0,20),
+    recommendations: ['Full synthesis narrative unavailable — review per-zone findings above for detail.'],
+    summary: `Overall score averaged from ${zoneResults.length} zone-level assessments.`
+  };
 }
 
 function fallbackCpted() {
@@ -1028,7 +1235,7 @@ function renderCctvCard(cam) {
   card.className = 'cctv-card'; card.id = 'cc-'+cam.id;
   card.innerHTML = `
     <div class="cctv-card-head">
-      <span class="cctv-card-title">${cam.name}</span>
+      <input type="text" class="cctv-name-input" value="${escAttr(cam.name)}" onchange="renameCctvCamera(${cam.id},this.value)" title="Click to rename this camera">
       <select class="cctv-level-select" id="ccl-${cam.id}" onchange="setCctvLevel(${cam.id}, this.value)"></select>
       <span class="badge b-wait" id="cb-${cam.id}">AWAITING IMAGE</span>
     </div>
@@ -1040,6 +1247,12 @@ function renderCctvCard(cam) {
 function setCctvLevel(id, level) {
   const cam = cctvCameras.find(c=>c.id===id);
   if(cam){ cam.level = level; renderMapLevelTabs(); drawMap(); }
+}
+
+function renameCctvCamera(id, newName) {
+  const cam = cctvCameras.find(c=>c.id===id);
+  const trimmed = (newName || '').trim();
+  if (cam && trimmed) { cam.name = trimmed; drawMap(); }
 }
 
 function initCctvCameras() {
@@ -1061,15 +1274,16 @@ function handleCctvUpload(input, idx) {
   const file = input.files[0]; if(!file) return;
   const cam = cctvCameras.find(c=>c.id===idx);
   const reader = new FileReader();
-  reader.onload = e => {
-    cam.img = e.target.result;
+  reader.onload = async e => {
+    const compressed = await compressImageDataUrl(e.target.result);
+    cam.img = compressed;
     cam.analysis = null;
     const card = document.getElementById('cc-'+idx);
     const drop = document.getElementById('cd-'+idx);
     const badge = document.getElementById('cb-'+idx);
     card.classList.add('has-image');
     badge.className='badge b-wait'; badge.textContent='READY TO ANALYZE';
-    drop.innerHTML = `<div class="cctv-img-wrap"><img src="${e.target.result}"><div class="ann-overlay" id="ca-${idx}"></div></div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${idx})" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">`;
+    drop.innerHTML = `<div class="cctv-img-wrap"><img src="${compressed}"><div class="ann-overlay" id="ca-${idx}"></div></div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${idx})" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">`;
     drop.style.cssText='min-height:unset;padding:0;position:relative';
     updateCctvCount(); checkAnalyzeAll(); drawMap();
   };
@@ -1175,6 +1389,53 @@ function addCctvSlot() {
   refreshAllLevelSelects();
   document.getElementById('cctvUploadCount').textContent=`0 of ${cctvCameras.length} cameras uploaded`;
   renderMapLevelTabs();
+}
+
+function applyCctvCardPreview(idx, compressedDataUrl) {
+  const cam = cctvCameras.find(c=>c.id===idx); if(!cam) return;
+  cam.img = compressedDataUrl;
+  const card = document.getElementById('cc-'+idx);
+  const drop = document.getElementById('cd-'+idx);
+  const badge = document.getElementById('cb-'+idx);
+  if (!card || !drop || !badge) return;
+  card.classList.add('has-image');
+  badge.className='badge b-wait'; badge.textContent='READY TO ANALYZE';
+  drop.innerHTML = `<div class="cctv-img-wrap"><img src="${compressedDataUrl}"><div class="ann-overlay" id="ca-${idx}"></div></div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${idx})" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">`;
+  drop.style.cssText='min-height:unset;padding:0;position:relative';
+}
+
+// Bulk upload — pick a level once, then select many camera photos at once.
+// Each photo becomes its own camera card tagged to the chosen level.
+function triggerBulkCctvUpload() { document.getElementById('bulkCctvFileInput').click(); }
+
+async function handleBulkCctvUpload(input) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+  const level = document.getElementById('bulkCctvLevel')?.value || propertyLevels[0];
+  const statusEl = document.getElementById('bulkCctvStatus');
+  let done = 0;
+  if (statusEl) statusEl.textContent = `Uploading 0/${files.length}...`;
+  for (const file of files) {
+    const idx = nextCctvId++;
+    const cam = newCctvCard(idx, `CAM-0${cctvCameras.length+1} \u2014 CUSTOM`, 'custom area', level);
+    cctvCameras.push(cam);
+    renderCctvCard(cam);
+    await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async e => {
+        const compressed = await compressImageDataUrl(e.target.result);
+        applyCctvCardPreview(idx, compressed);
+        done++;
+        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...`;
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  refreshAllLevelSelects();
+  updateCctvCount(); checkAnalyzeAll(); drawMap(); renderMapLevelTabs();
+  if (statusEl) statusEl.textContent = `Added ${files.length} camera(s) to ${level}.`;
+  input.value = '';
 }
 
 function buildCctvScore() {
