@@ -832,6 +832,34 @@ function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78) {
 }
 function escAttr(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
 
+// More forgiving than a plain JSON.parse — strips markdown fences, then finds the
+// outermost {...} block even if the model added a sentence before/after it. This
+// is what actually failed for CPTED synthesis: a long response (15+ zones worth of
+// data) occasionally comes back with a trailing note or gets truncated just past
+// the closing brace, which a strict JSON.parse rejects outright.
+function extractJsonLoose(text) {
+  if (!text) throw new Error('Empty response from model.');
+  let cleaned = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  const first = cleaned.indexOf('{');
+  const last = cleaned.lastIndexOf('}');
+  if (first === -1 || last === -1 || last < first) {
+    throw new Error('No JSON object found in response.');
+  }
+  let jsonStr = cleaned.substring(first, last + 1);
+  try {
+    return JSON.parse(jsonStr);
+  } catch (e) {
+    // Common truncation case: response cut off mid-array/object. Try trimming back
+    // to the last complete top-level field before giving up.
+    const lastComma = jsonStr.lastIndexOf(',');
+    if (lastComma > first) {
+      const attempt = jsonStr.substring(0, lastComma) + '}';
+      try { return JSON.parse(attempt); } catch (e2) { /* fall through */ }
+    }
+    throw new Error('JSON parse failed: ' + e.message);
+  }
+}
+
 // ═══════════════════════════════════════════
 // LEVELS CONFIG
 // ═══════════════════════════════════════════
@@ -1052,9 +1080,8 @@ async function analyzeCptedZone(zone, obj, multiLevel) {
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
-    raw = raw.replace(/```json|```/g,'').trim();
     let parsed;
-    try { parsed = JSON.parse(raw); }
+    try { parsed = extractJsonLoose(raw); }
     catch(e) {
       console.warn('CPTED zone', zone, ': could not parse AI response as JSON. Raw:', raw);
       parsed = { zone_score:55, principle_scores:{lighting:55,naturalSurveillance:55,territorialReinforcement:55,accessManagement:55}, findings:[], summary:'Could not be read; on-site verification recommended for this zone.' };
@@ -1130,14 +1157,13 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
 
     const resp = await fetch(API, {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({max_tokens:2000, content:synthPrompt})
+      body: JSON.stringify({max_tokens:4000, content:synthPrompt})
     });
     const data = await resp.json();
     if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
-    raw = raw.replace(/```json|```/g,'').trim();
     let parsed;
-    try { parsed = JSON.parse(raw); }
+    try { parsed = extractJsonLoose(raw); }
     catch(e) {
       console.warn('CPTED synthesis: could not parse AI response as JSON. Raw:', raw);
       alert('CPTED synthesis returned a response that could not be read. Showing a score averaged from per-zone results instead. Check the console (F12) for detail.');
@@ -1332,8 +1358,7 @@ Respond ONLY with valid JSON (no markdown):
       throw new Error(data.error || `Server returned HTTP ${resp.status}`);
     }
     let raw = data.content?.find(b=>b.type==='text')?.text||'{}';
-    raw = raw.replace(/```json|```/g,'').trim();
-    let p; try{p=JSON.parse(raw);}catch(e){console.warn('CCTV camera', idx, ': could not parse AI response as JSON. Raw response was:', raw); p=fallbackCctv(cam.zone);}
+    let p; try{p=extractJsonLoose(raw);}catch(e){console.warn('CCTV camera', idx, ': could not parse AI response as JSON. Raw response was:', raw); p=fallbackCctv(cam.zone);}
     cam.analysis = p;
     const so=document.getElementById('so-'+idx); if(so)so.remove();
     card.classList.remove('analyzing'); card.classList.add('analyzed');
@@ -1660,8 +1685,7 @@ Evaluate this guard program and respond ONLY with valid JSON (no markdown):
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
-    raw = raw.replace(/```json|```/g,'').trim();
-    let parsed; try{parsed=JSON.parse(raw);}catch(e){console.warn('Guard eval: could not parse AI response as JSON. Raw:', raw); alert('Guard evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackGuard();}
+    let parsed; try{parsed=extractJsonLoose(raw);}catch(e){console.warn('Guard eval: could not parse AI response as JSON. Raw:', raw); alert('Guard evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackGuard();}
     renderGuardResults(parsed);
   } catch(e){
     alert('Guard evaluation failed: ' + e.message + '\n\nShowing placeholder results below.');
@@ -1813,8 +1837,7 @@ Evaluate this access control system and respond ONLY with valid JSON (no markdow
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
-    raw = raw.replace(/```json|```/g,'').trim();
-    let parsed; try{parsed=JSON.parse(raw);}catch(e){console.warn('Access control eval: could not parse AI response as JSON. Raw:', raw); alert('Access control evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackAc();}
+    let parsed; try{parsed=extractJsonLoose(raw);}catch(e){console.warn('Access control eval: could not parse AI response as JSON. Raw:', raw); alert('Access control evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackAc();}
     renderAcResults(parsed);
   } catch(e){
     alert('Access control evaluation failed: ' + e.message + '\n\nShowing placeholder results below.');
