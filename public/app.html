@@ -764,8 +764,13 @@ select.form-input option{background:var(--dark)}
     <input class="form-input" id="propNameInput" placeholder="Property name / address" style="font-size:11px;padding:6px 9px" oninput="document.getElementById('propDisplay').textContent=this.value||'COMMERCIAL PROPERTY ASSESSMENT'">
   </div>
   <div class="sb-section">
+    <div class="sb-label">Full Assessment</div>
+    <button class="btn-primary" id="runFullBtn" onclick="runFullAssessment()" style="width:100%;margin-bottom:6px;font-size:13px;justify-content:center">&#9889; RUN ALL &amp; BUILD REPORT</button>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-bottom:6px" id="runFullStatus">Runs CPTED, CCTV, Guard &amp; Access Control in sequence, then generates one combined PDF.</div>
+  </div>
+  <div class="sb-section">
     <div class="sb-label">Actions</div>
-    <button class="btn-ghost" id="exportReportBtn" onclick="exportReport(event)" style="width:100%;margin-bottom:6px;font-size:9px">&#128196; EXPORT REPORT</button>
+    <button class="btn-ghost" id="exportReportBtn" onclick="exportReport(event)" style="width:100%;margin-bottom:6px;font-size:9px">&#128196; EXPORT REPORT ONLY</button>
     <button class="btn-ghost" onclick="resetAll()" style="width:100%;font-size:9px">&#8635; RESET ALL</button>
   </div>
 </div>
@@ -2360,6 +2365,54 @@ async function buildAssessmentPdf() {
   for (const c of chunks) { out.set(c, off); off += c.length; }
   return out;
 }
+
+// Runs all four section analyses in sequence, then builds the combined PDF —
+// the "do everything, give me one report" button. Skips CPTED/CCTV if no
+// photos were uploaded for them (nothing to analyze), but always runs Guard
+// and Access Control since those forms have sensible defaults even untouched.
+async function runFullAssessment() {
+  const btn = document.getElementById('runFullBtn');
+  const statusEl = document.getElementById('runFullStatus');
+  const setStatus = (s) => { if (statusEl) statusEl.textContent = s; };
+  if (btn) btn.disabled = true;
+
+  try {
+    if (Object.keys(cptedImages).length > 0) {
+      setStatus('Step 1/5 — Running CPTED analysis...');
+      goPage(1);
+      await analyzeCpted();
+    } else {
+      setStatus('Step 1/5 — Skipped CPTED (no photos uploaded).');
+    }
+
+    if (cctvCameras.some(c => c.img)) {
+      setStatus('Step 2/5 — Running CCTV analysis...');
+      goPage(2);
+      await analyzeAllCctv();
+    } else {
+      setStatus('Step 2/5 — Skipped CCTV (no camera photos uploaded).');
+    }
+
+    setStatus('Step 3/5 — Evaluating guard program...');
+    goPage(3);
+    await analyzeGuard();
+
+    setStatus('Step 4/5 — Evaluating access control...');
+    goPage(4);
+    await analyzeAccessControl();
+
+    setStatus('Step 5/5 — Building combined PDF report...');
+    await exportReport();
+
+    setStatus('\u2713 Full assessment complete. Report downloaded.');
+  } catch (e) {
+    console.error('Full assessment failed:', e);
+    setStatus('Failed: ' + e.message + ' — check console (F12) for detail.');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 
 async function exportReport(evt) {
   const btn = document.getElementById('exportReportBtn') || evt?.target?.closest?.('button');
