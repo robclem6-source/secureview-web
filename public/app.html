@@ -1163,7 +1163,7 @@ async function analyzeCptedZone(zone, obj, multiLevel) {
   const image = { type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]} };
   const prompt = buildCptedZonePrompt(zone, obj, multiLevel);
   try {
-    const data = await fetchWithRetry({max_tokens:700, content:[image, {type:'text', text:prompt}]});
+    const data = await fetchWithRetry({max_tokens:1500, content:[image, {type:'text', text:prompt}]});
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     let parsed;
     try { parsed = extractJsonLoose(raw); }
