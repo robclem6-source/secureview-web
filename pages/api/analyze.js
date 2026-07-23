@@ -1,9 +1,3 @@
-// pages/api/analyze.js
-//
-// The ONE piece of backend infrastructure that lets the app be safely hosted:
-// a server-side proxy to the Anthropic API. The frontend calls THIS route
-// instead of api.anthropic.com directly, so the API key never reaches the browser.
-
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     res.setHeader('Allow', ['POST']);
@@ -52,7 +46,6 @@ export default async function handler(req, res) {
   }
 }
 
-// CPTED analysis sends multiple base64 images in one request — raise the body limit.
 export const config = {
   api: {
     bodyParser: {

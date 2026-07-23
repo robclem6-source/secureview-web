@@ -57,6 +57,7 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .upload-zone.has-image{border-style:solid;border-color:var(--green)}
 .upload-zone.analyzing{border-color:var(--blue);animation:pulseB 1.5s infinite}
 .upload-zone.analyzed{border-color:rgba(240,165,0,.5)}
+.upload-zone.upload-error{border-color:var(--red);background:rgba(248,81,73,.06)}
 @keyframes pulseB{0%,100%{border-color:var(--blue)}50%{border-color:rgba(88,166,255,.25)}}
 .upload-zone input[type="file"]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
 .zone-icon{font-size:20px}
@@ -82,6 +83,7 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .cctv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:1rem}
 .cctv-card{background:var(--dark);border:1px solid var(--border);border-radius:6px;overflow:hidden;transition:border-color .2s}
 .cctv-card.analyzed{border-color:rgba(240,165,0,.4)}
+.cctv-card.upload-error{border-color:var(--red);background:rgba(248,81,73,.04)}
 .cctv-card.analyzing{border-color:var(--blue);animation:pulseB 1.5s infinite}
 .cctv-card-head{padding:9px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
 .cctv-card-title{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--white)}
@@ -814,13 +816,31 @@ function getMedia(d){ if(d.includes('image/png'))return'image/png'; if(d.include
 // with 8-12+ full-resolution phone photos bundled into one CPTED analyze call,
 // the raw base64 payload blows past that limit. Compressing on upload keeps
 // each photo small (typically 100-400KB) so even a dozen zones fit comfortably.
-function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78) {
+// Detects iPhone HEIC/HEIF photos by extension/type before even attempting to decode —
+// these are the #1 cause of "unreadable image" failures, since browsers generally
+// can't decode HEIC via canvas/Image APIs. Checking this first lets us give a
+// specific, actionable message instead of a generic decode error.
+function isLikelyHeic(file) {
+  const t = (file.type || '').toLowerCase();
+  const n = (file.name || '').toLowerCase();
+  return t === 'image/heic' || t === 'image/heif' || n.endsWith('.heic') || n.endsWith('.heif');
+}
+
+// Returns { dataUrl } on success, or { error } on failure — callers MUST check
+// which one came back rather than assuming success, since a silently-broken
+// image used to slip through here and only surface as a confusing gap later
+// (an unreadable photo embedded in the PDF, or a zone mysteriously excluded).
+function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78, sourceFile=null) {
   return new Promise((resolve) => {
+    if (sourceFile && isLikelyHeic(sourceFile)) {
+      resolve({ error: 'HEIC/HEIF format (default iPhone photo format) — browsers can\'t read this format directly. On the iPhone: Settings \u2192 Camera \u2192 Formats \u2192 "Most Compatible", then re-take or re-export the photo as JPEG.' });
+      return;
+    }
     const img = new Image();
     img.onload = () => {
       try {
         let w = img.naturalWidth, h = img.naturalHeight;
-        if (!w || !h) return resolve(dataUrl); // fallback: use original if dimensions unreadable
+        if (!w || !h) return resolve({ error: 'Image has no readable dimensions — the file may be corrupted.' });
         if (w > h && w > maxDim) { h = Math.round(h*maxDim/w); w = maxDim; }
         else if (h > maxDim) { w = Math.round(w*maxDim/h); h = maxDim; }
         const canvas = document.createElement('canvas');
@@ -828,10 +848,11 @@ function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78) {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, w, h);
         const out = canvas.toDataURL('image/jpeg', quality);
-        resolve(out && out.startsWith('data:image') ? out : dataUrl);
-      } catch (e) { resolve(dataUrl); } // fallback: use original on any error
+        if (out && out.startsWith('data:image')) resolve({ dataUrl: out });
+        else resolve({ error: 'Browser could not re-encode this image.' });
+      } catch (e) { resolve({ error: 'Image processing failed: ' + e.message }); }
     };
-    img.onerror = () => resolve(dataUrl); // fallback: use original if decode fails
+    img.onerror = () => resolve({ error: 'Browser could not decode this image file — it may be an unsupported format (e.g. HEIC) or corrupted.' });
     img.src = dataUrl;
   });
 }
@@ -973,11 +994,31 @@ function renameCptedZone(zone, newName) {
   if (trimmed) CPTED_LABELS[zone] = trimmed;
 }
 
+// Marks a zone tile as failed-to-read instead of silently treating it as captured.
+// The zone is NOT added to cptedImages, so it's correctly excluded from analysis
+// rather than sending broken image data to the AI or embedding it unreadable in the PDF.
+function markCptedZoneFailed(zone, errorMsg) {
+  delete cptedImages[zone];
+  const el = document.getElementById('cz-'+zone);
+  if (!el) return;
+  el.classList.remove('has-image','analyzing','analyzed');
+  el.classList.add('upload-error');
+  const label = CPTED_LABELS[zone] || zone;
+  el.innerHTML = `<span class="zone-icon">&#9888;&#65039;</span><div class="zone-label" style="color:var(--red)">Could not read photo</div><div class="zone-hint" style="color:var(--red);line-height:1.4">${escAttr(errorMsg)}</div><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+}
+
 function handleCptedUpload(input, zone) {
   const file = input.files[0]; if(!file) return;
   const reader = new FileReader();
   reader.onload = async e => {
-    const compressed = await compressImageDataUrl(e.target.result);
+    const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+    if (result.error) {
+      markCptedZoneFailed(zone, result.error);
+      updateCptedCount();
+      alert(`This photo could not be used: ${result.error}`);
+      return;
+    }
+    const compressed = result.dataUrl;
     const levelSel = document.getElementById('czl-'+zone);
     const level = (levelSel && levelSel.value) || propertyLevels[0];
     cptedImages[zone] = {data: compressed, level: level};
@@ -1018,18 +1059,23 @@ async function handleBulkCptedUpload(input) {
   if (!files.length) return;
   const level = document.getElementById('bulkCptedLevel')?.value || propertyLevels[0];
   const statusEl = document.getElementById('bulkCptedStatus');
-  let done = 0;
+  let done = 0, failed = 0;
   if (statusEl) statusEl.textContent = `Uploading 0/${files.length}...`;
   for (const file of files) {
     const zone = createCptedZoneSlot(`Bulk upload \u2014 ${level}`);
     await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = async e => {
-        const compressed = await compressImageDataUrl(e.target.result);
-        cptedImages[zone] = {data: compressed, level: level};
-        applyCptedZonePreview(zone, compressed);
+        const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+        if (result.error) {
+          markCptedZoneFailed(zone, result.error);
+          failed++;
+        } else {
+          cptedImages[zone] = {data: result.dataUrl, level: level};
+          applyCptedZonePreview(zone, result.dataUrl);
+        }
         done++;
-        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...`;
+        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...` + (failed ? ` (${failed} failed)` : '');
         resolve();
       };
       reader.readAsDataURL(file);
@@ -1037,7 +1083,12 @@ async function handleBulkCptedUpload(input) {
   }
   refreshAllLevelSelects();
   updateCptedCount();
-  if (statusEl) statusEl.textContent = `Added ${files.length} photo(s) to ${level}.`;
+  if (statusEl) {
+    statusEl.textContent = failed
+      ? `Added ${files.length - failed} of ${files.length} photo(s) to ${level} \u2014 ${failed} could not be read (see red tiles below).`
+      : `Added ${files.length} photo(s) to ${level}.`;
+    if (failed) statusEl.style.color = 'var(--red)'; else statusEl.style.color = '';
+  }
   input.value = ''; // allow re-selecting the same files later if needed
 }
 
@@ -1301,17 +1352,39 @@ function initCctvCameras() {
   refreshAllLevelSelects();
 }
 
+function markCctvCameraFailed(idx, errorMsg) {
+  const cam = cctvCameras.find(c=>c.id===idx);
+  if (cam) { cam.img = null; cam.analysis = null; }
+  const card = document.getElementById('cc-'+idx);
+  const drop = document.getElementById('cd-'+idx);
+  const badge = document.getElementById('cb-'+idx);
+  if (!card || !drop || !badge) return;
+  card.classList.remove('has-image','analyzing','analyzed');
+  card.classList.add('upload-error');
+  badge.className='badge b-err'; badge.textContent='UNREADABLE';
+  drop.innerHTML = `<span style="font-size:24px">&#9888;&#65039;</span><div style="font-size:11px;font-weight:600;color:var(--red)">Could not read this photo</div><div style="font-size:9px;color:var(--red);line-height:1.4;padding:0 8px;text-align:center">${escAttr(errorMsg)}</div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${idx})">`;
+  drop.style.cssText='';
+}
+
 function handleCctvUpload(input, idx) {
   const file = input.files[0]; if(!file) return;
   const cam = cctvCameras.find(c=>c.id===idx);
   const reader = new FileReader();
   reader.onload = async e => {
-    const compressed = await compressImageDataUrl(e.target.result);
+    const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+    if (result.error) {
+      markCctvCameraFailed(idx, result.error);
+      updateCctvCount();
+      alert(`This photo could not be used: ${result.error}`);
+      return;
+    }
+    const compressed = result.dataUrl;
     cam.img = compressed;
     cam.analysis = null;
     const card = document.getElementById('cc-'+idx);
     const drop = document.getElementById('cd-'+idx);
     const badge = document.getElementById('cb-'+idx);
+    card.classList.remove('upload-error');
     card.classList.add('has-image');
     badge.className='badge b-wait'; badge.textContent='READY TO ANALYZE';
     drop.innerHTML = `<div class="cctv-img-wrap"><img src="${compressed}"><div class="ann-overlay" id="ca-${idx}"></div></div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${idx})" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">`;
@@ -1443,7 +1516,7 @@ async function handleBulkCctvUpload(input) {
   if (!files.length) return;
   const level = document.getElementById('bulkCctvLevel')?.value || propertyLevels[0];
   const statusEl = document.getElementById('bulkCctvStatus');
-  let done = 0;
+  let done = 0, failed = 0;
   if (statusEl) statusEl.textContent = `Uploading 0/${files.length}...`;
   for (const file of files) {
     const idx = nextCctvId++;
@@ -1453,10 +1526,15 @@ async function handleBulkCctvUpload(input) {
     await new Promise((resolve) => {
       const reader = new FileReader();
       reader.onload = async e => {
-        const compressed = await compressImageDataUrl(e.target.result);
-        applyCctvCardPreview(idx, compressed);
+        const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+        if (result.error) {
+          markCctvCameraFailed(idx, result.error);
+          failed++;
+        } else {
+          applyCctvCardPreview(idx, result.dataUrl);
+        }
         done++;
-        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...`;
+        if (statusEl) statusEl.textContent = `Uploading ${done}/${files.length}...` + (failed ? ` (${failed} failed)` : '');
         resolve();
       };
       reader.readAsDataURL(file);
@@ -1464,7 +1542,12 @@ async function handleBulkCctvUpload(input) {
   }
   refreshAllLevelSelects();
   updateCctvCount(); checkAnalyzeAll(); drawMap(); renderMapLevelTabs();
-  if (statusEl) statusEl.textContent = `Added ${files.length} camera(s) to ${level}.`;
+  if (statusEl) {
+    statusEl.textContent = failed
+      ? `Added ${files.length - failed} of ${files.length} camera(s) to ${level} \u2014 ${failed} could not be read (see red tiles below).`
+      : `Added ${files.length} camera(s) to ${level}.`;
+    statusEl.style.color = failed ? 'var(--red)' : '';
+  }
   input.value = '';
 }
 
