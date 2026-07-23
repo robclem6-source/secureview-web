@@ -1124,17 +1124,46 @@ Evaluate ONLY what is visible in this photo against the four CPTED principles (n
 }`;
 }
 
+// Retries a fetch-and-check call with exponential backoff. Added specifically
+// because at higher zone counts (20+), a meaningful chunk of per-zone requests
+// were failing on the first attempt — most likely transient rate limiting from
+// firing many vision requests in quick succession, or an occasional slow
+// response. One retry with a short backoff resolves the vast majority of these
+// without meaningfully slowing down the common case where nothing fails.
+async function fetchWithRetry(body, retries = 2, backoffMs = 1200) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let resp, data;
+    try {
+      resp = await fetch(API, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      data = await resp.json();
+    } catch (networkErr) {
+      // Genuine network failure (offline, DNS, etc.) — always worth retrying.
+      lastErr = networkErr;
+      if (attempt < retries) { await new Promise(r=>setTimeout(r, backoffMs*(attempt+1))); continue; }
+      throw lastErr;
+    }
+    if (resp.ok && !data.error) return data;
+    // Got a real response, just not a success. Only retry the transient cases
+    // (rate limit / server overload) — a bad request or bad key will fail the
+    // same way every time, so retrying it just wastes time.
+    const msg = data.error || `Server returned HTTP ${resp.status}`;
+    const retryable = resp.status === 429 || resp.status >= 500;
+    if (retryable && attempt < retries) { lastErr = new Error(msg); await new Promise(r=>setTimeout(r, backoffMs*(attempt+1))); continue; }
+    throw new Error(msg);
+  }
+  throw lastErr;
+}
+
 async function analyzeCptedZone(zone, obj, multiLevel) {
   const el = document.getElementById('cz-'+zone);
   const image = { type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]} };
   const prompt = buildCptedZonePrompt(zone, obj, multiLevel);
   try {
-    const resp = await fetch(API, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({max_tokens:700, content:[image, {type:'text', text:prompt}]})
-    });
-    const data = await resp.json();
-    if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
+    const data = await fetchWithRetry({max_tokens:700, content:[image, {type:'text', text:prompt}]});
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     let parsed;
     try { parsed = extractJsonLoose(raw); }
@@ -1144,8 +1173,8 @@ async function analyzeCptedZone(zone, obj, multiLevel) {
     }
     cptedZoneResults[zone] = parsed;
   } catch(e) {
-    console.warn('CPTED zone', zone, 'failed:', e.message);
-    cptedZoneResults[zone] = { zone_score:55, principle_scores:{lighting:55,naturalSurveillance:55,territorialReinforcement:55,accessManagement:55}, findings:[{severity:'warning',title:'Zone analysis failed',detail:e.message}], summary:'Analysis failed for this zone; on-site verification recommended.' };
+    console.warn('CPTED zone', zone, 'failed after retries:', e.message);
+    cptedZoneResults[zone] = { zone_score:55, principle_scores:{lighting:55,naturalSurveillance:55,territorialReinforcement:55,accessManagement:55}, findings:[{severity:'warning',title:'Zone analysis failed',detail:e.message}], summary:'Analysis failed for this zone after retries; on-site verification recommended.' };
   }
   if (el) { el.classList.remove('analyzing'); el.classList.add('analyzed'); }
 }
@@ -1181,11 +1210,14 @@ async function analyzeCpted() {
 
   const multiLevel = propertyLevels.length > 1;
   cptedZoneResults = {};
+  let cptedZoneFailCount = 0;
 
   try {
     await runWithConcurrency(uploaded, async ([zone, obj]) => {
+      const before = cptedZoneResults[zone];
       await analyzeCptedZone(zone, obj, multiLevel);
-    }, 3, (done, total) => { btn.textContent = `ANALYZING ${done}/${total}...`; });
+      if (cptedZoneResults[zone]?.summary?.includes('after retries')) cptedZoneFailCount++;
+    }, 2, (done, total) => { btn.textContent = `ANALYZING ${done}/${total}...` + (cptedZoneFailCount ? ` (${cptedZoneFailCount} retrying/failed)` : ''); });
 
     btn.textContent = 'SYNTHESIZING...';
 
@@ -1229,6 +1261,13 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
   } catch(e) {
     alert('CPTED analysis failed: ' + e.message + '\n\nShowing placeholder results below. Check the browser console (F12) or your terminal for more detail.');
     renderCptedResults(fallbackCpted());
+  }
+
+  if (cptedZoneFailCount > 0) {
+    const failedZoneNames = uploaded
+      .filter(([zone]) => cptedZoneResults[zone]?.summary?.includes('after retries'))
+      .map(([zone]) => CPTED_LABELS[zone] || zone);
+    alert(`${cptedZoneFailCount} of ${uploaded.length} zones failed to analyze even after retrying (likely a rate limit or brief server issue, not a bad photo):\n\n${failedZoneNames.join('\n')}\n\nThese zones show generic placeholder findings in the report. Clicking Re-Analyze will re-run all zones and usually succeeds on retry.`);
   }
 
   uploaded.forEach(([zone]) => {
@@ -1427,14 +1466,9 @@ Camera location: ${cam.zone} (${cam.level})
 Respond ONLY with valid JSON (no markdown):
 {"overallScore":<0-100>,"placement":{"score":<0-100>,"assessment":"<1 sentence>"},"coverage":{"score":<0-100>,"fovDegrees":<number>,"estimatedRangeMeters":<number>,"assessment":"<1 sentence>"},"imageQuality":{"score":<0-100>,"resolution":"<SD/HD/4K/Unknown>","nightVision":"<Yes/No/Unknown>","assessment":"<1 sentence>"},"blindSpots":["<blind spot>"],"vulnerabilities":[{"severity":"<critical|warning|info>","issue":"<title>","detail":"<1-2 sentences>"}],"positives":["<positive>"],"annotations":[{"type":"<critical|warning|info|good>","label":"<max 18 chars>","x":<0-100>,"y":<0-100>,"w":<5-40>,"h":<5-40>}],"recommendations":["<recommendation>"],"summary":"<2-3 sentence professional summary>"}`;
   try {
-    const resp = await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:2000,content:[
+    const data = await fetchWithRetry({max_tokens:2000,content:[
         {type:'image',source:{type:'base64',media_type:getMedia(cam.img),data:cam.img.split(',')[1]}},
-        {type:'text',text:prompt}]})});
-    const data = await resp.json();
-    if (!resp.ok || data.error) {
-      throw new Error(data.error || `Server returned HTTP ${resp.status}`);
-    }
+        {type:'text',text:prompt}]});
     let raw = data.content?.find(b=>b.type==='text')?.text||'{}';
     let p; try{p=extractJsonLoose(raw);}catch(e){console.warn('CCTV camera', idx, ': could not parse AI response as JSON. Raw response was:', raw); p=fallbackCctv(cam.zone);}
     cam.analysis = p;
@@ -1445,7 +1479,7 @@ Respond ONLY with valid JSON (no markdown):
     renderCctvFindings(idx, p);
     renderCctvMetrics(idx, p);
   } catch(e) {
-    console.error('CCTV analysis error for camera', idx, ':', e.message);
+    console.error('CCTV analysis error for camera', idx, 'after retries:', e.message);
     const so=document.getElementById('so-'+idx); if(so)so.remove();
     badge.className='badge b-err'; badge.textContent='ERROR';
     cam.analysis = fallbackCctv(cam.zone);
