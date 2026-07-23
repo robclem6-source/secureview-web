@@ -1686,7 +1686,7 @@ Evaluate this guard program and respond ONLY with valid JSON (no markdown):
 
   try {
     const resp = await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:3000,content:prompt})});
+      body:JSON.stringify({max_tokens:4000,content:prompt})});
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
@@ -1838,7 +1838,7 @@ Evaluate this access control system and respond ONLY with valid JSON (no markdow
 
   try {
     const resp = await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({max_tokens:3000,content:prompt})});
+      body:JSON.stringify({max_tokens:4000,content:prompt})});
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
