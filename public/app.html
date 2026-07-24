@@ -1230,9 +1230,14 @@ async function fetchWithRetry(body, maxRetries429 = 4, maxRetries5xx = 2) {
 
 async function analyzeCptedZone(zone, obj, multiLevel) {
   const el = document.getElementById('cz-'+zone);
-  const image = { type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]} };
-  const prompt = buildCptedZonePrompt(zone, obj, multiLevel);
   try {
+    // Building the image payload and prompt now happens inside the try too --
+    // a malformed data URL for one zone's photo (getMedia()/split() throwing)
+    // used to escape uncaught before any error handling existed, which (via
+    // runWithConcurrency, see below) could abort analysis for every other
+    // zone still queued behind it rather than just this one zone.
+    const image = { type:'image', source:{type:'base64', media_type:getMedia(obj.data), data:obj.data.split(',')[1]} };
+    const prompt = buildCptedZonePrompt(zone, obj, multiLevel);
     const data = await fetchWithRetry({max_tokens:1500, content:[image, {type:'text', text:prompt}]});
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     let parsed;
@@ -1257,7 +1262,13 @@ async function runWithConcurrency(items, worker, concurrency, onProgress) {
   async function next() {
     while (idx < items.length) {
       const myIdx = idx++;
-      await worker(items[myIdx], myIdx);
+      try {
+        await worker(items[myIdx], myIdx);
+      } catch(e) {
+        // A single item's worker throwing should never take the rest of the
+        // batch down with it -- log and keep processing remaining items.
+        console.error('runWithConcurrency: item', myIdx, 'failed unexpectedly:', e);
+      }
       done++;
       if (onProgress) onProgress(done, items.length);
     }
@@ -1295,22 +1306,46 @@ async function analyzeCpted() {
 
     // Pass 2: text-only synthesis across all per-zone results. No images in this
     // request at all, so it's tiny regardless of how many zones were analyzed.
+    //
+    // `zoneSummaryForSynthesis` keeps the FULL per-zone data (principle scores,
+    // full finding detail text) -- this is what buildCompleteCptedFindings() and
+    // the fallback path use to guarantee a complete, accurate findings list no
+    // matter what happens with the AI call below.
+    //
+    // `compactZonesForPrompt` is a separate, deliberately trimmed version that's
+    // actually sent to the model: just zone/level/score and finding
+    // severity+title, no multi-sentence detail text and no principle_scores
+    // breakdown. At 50+ zones the full detail text was a lot of input tokens
+    // for no real benefit to the narrative the model is writing.
     const zoneSummaryForSynthesis = uploaded.map(([zone,obj]) => ({
       zone: CPTED_LABELS[zone] || zone, level: obj.level, ...cptedZoneResults[zone]
     }));
+    const compactZonesForPrompt = zoneSummaryForSynthesis.map(z => ({
+      zone: z.zone, level: z.level, score: z.zone_score,
+      findings: (z.findings||[]).map(f=>({severity:f.severity, title:f.title}))
+    }));
+    // The model is no longer asked to reproduce the findings list itself --
+    // that was the single largest driver of output size (every one of
+    // potentially 150+ findings, each with a title and 2-sentence detail) and
+    // the most likely reason synthesis was hitting the max_tokens ceiling and
+    // coming back as truncated/invalid JSON at large zone counts. The complete
+    // findings list is now always built deterministically in code from the
+    // full per-zone results (buildCompleteCptedFindings, below) -- the model's
+    // only job is the narrative: overall scoring and the written summary/
+    // recommendations, which is a small, roughly fixed-size output regardless
+    // of whether the property has 10 zones or 150.
     const synthPrompt = `You are a senior CPTED security consultant preparing the executive summary for a commercial property assessment, based on ${uploaded.length} zone-level findings already collected by a field assessor.
 
-ZONE FINDINGS:
-${JSON.stringify(zoneSummaryForSynthesis)}
+ZONE FINDINGS (severity + short title only -- full detail was already reviewed by the field assessor):
+${JSON.stringify(compactZonesForPrompt)}
 
-Synthesize these into one overall assessment. Respond ONLY with valid JSON (no markdown, no backticks):
+Synthesize these into one overall assessment narrative. Do NOT reproduce the individual findings list -- that is handled separately. Respond ONLY with valid JSON (no markdown, no backticks):
 {
   "overallScore": <0-100>,
   "lighting": {"score": <0-100>, "assessment": "<1 sentence>"},
   "naturalSurveillance": {"score": <0-100>, "assessment": "<1 sentence>"},
   "territorialReinforcement": {"score": <0-100>, "assessment": "<1 sentence>"},
   "accessManagement": {"score": <0-100>, "assessment": "<1 sentence>"},
-  "findings": [{"severity": "<critical|warning|good>", "area": "<zone name>", "title": "<short title>", "detail": "<2 sentences>"}],
   "recommendations": ["<specific actionable recommendation 1>", "<recommendation 2>", "<recommendation 3>"],
   "summary": "<3-4 sentence professional CPTED assessment summary covering the whole property>"
 }`;
@@ -1323,7 +1358,7 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
     // the same slip, since the model's wording isn't identical every time.
     for (let synthAttempt = 0; synthAttempt < 2 && !parsed; synthAttempt++) {
       try {
-        const data = await fetchWithRetry({max_tokens:4000, content:synthPrompt});
+        const data = await fetchWithRetry({max_tokens:1200, content:synthPrompt});
         let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
         const candidate = extractJsonLoose(raw);
         // A response can parse successfully as JSON but still be missing the
@@ -1340,8 +1375,14 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
       }
     }
     if (!parsed) {
-      alert('CPTED synthesis failed twice in a row (this can happen with very large zone counts): ' + (lastSynthError?.message||'unknown error') + '\n\nShowing a score averaged from per-zone results instead. Check the console (F12) for detail.');
+      alert('CPTED narrative synthesis failed twice in a row (this can happen with very large zone counts): ' + (lastSynthError?.message||'unknown error') + '\n\nShowing a score averaged from per-zone results instead — the findings list itself is complete either way. Check the console (F12) for detail.');
       parsed = synthesizeCptedFallback(zoneSummaryForSynthesis);
+    } else {
+      // Even on a successful narrative call, always use the deterministic,
+      // complete findings list rather than trusting the model to have
+      // included one — it was never asked to now, but this also protects
+      // against a future prompt edit reintroducing the old failure mode.
+      parsed.findings = buildCompleteCptedFindings(zoneSummaryForSynthesis);
     }
     renderCptedResults(parsed);
   } catch(e) {
@@ -1363,6 +1404,18 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
   btn.textContent = 'RE-ANALYZE'; btn.disabled = false;
 }
 
+// Builds the complete, severity-sorted findings list directly from the
+// per-zone AI results — no dependency on any model call reproducing it.
+// Used both by the fallback path (always has, historically) and now also by
+// the AI-synthesis-success path, so "findings" in the final report is always
+// complete and accurate regardless of whether the narrative call worked.
+function buildCompleteCptedFindings(zoneResults) {
+  const severityRank = { critical: 0, warning: 1, good: 2 };
+  return zoneResults
+    .flatMap(z => (z.findings||[]).map(f=>({severity:f.severity,area:z.zone,title:f.title,detail:f.detail})))
+    .sort((a,b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
+}
+
 // If the synthesis call itself fails to parse, build a reasonable overall
 // picture just by averaging the already-successful per-zone results —
 // better than falling all the way back to generic placeholder text.
@@ -1372,10 +1425,7 @@ function synthesizeCptedFallback(zoneResults) {
     return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : 55;
   };
   const overall = Math.round(zoneResults.reduce((s,z)=>s+(z.zone_score||55),0)/Math.max(zoneResults.length,1));
-  const severityRank = { critical: 0, warning: 1, good: 2 };
-  const findings = zoneResults
-    .flatMap(z => (z.findings||[]).map(f=>({severity:f.severity,area:z.zone,title:f.title,detail:f.detail})))
-    .sort((a,b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
+  const findings = buildCompleteCptedFindings(zoneResults);
   return {
     overallScore: overall,
     lighting: {score:avg('lighting'), assessment:'Averaged from per-zone results.'},
@@ -1440,7 +1490,7 @@ function renderCptedResults(a) {
 // PAGE 2 — CCTV
 // ═══════════════════════════════════════════
 function newCctvCard(id, name, zone, level) {
-  return {id, name, zone, level: level || propertyLevels[0], img:null, analysis:null};
+  return {id, name, zone, level: level || propertyLevels[0], img:null, analysis:null, analysisFailed:false};
 }
 
 function renderCctvCard(cam) {
@@ -1540,57 +1590,92 @@ function updateCctvCount() {
 }
 
 function checkAnalyzeAll() {
-  document.getElementById('analyzeAllCctvBtn').disabled = !cctvCameras.some(c=>c.img&&!c.analysis);
+  document.getElementById('analyzeAllCctvBtn').disabled = !cctvCameras.some(c=>c.img&&(!c.analysis||c.analysisFailed));
 }
 
 async function analyzeAllCctv() {
-  const todo = cctvCameras.filter(c=>c.img&&!c.analysis);
+  // Retry cameras that never got real analysis AND cameras whose last attempt
+  // fell back to the generic placeholder after exhausting retries. Previously
+  // this only checked `!c.analysis`, but a failed camera gets a non-null
+  // fallback object written to `cam.analysis` -- so it silently looked
+  // "done" forever and Re-Analyze would never touch it again.
+  const todo = cctvCameras.filter(c=>c.img && (!c.analysis || c.analysisFailed));
   if(!todo.length) return;
-  document.getElementById('analyzeAllCctvBtn').disabled = true;
-  for(const cam of todo) {
-    await analyzeCctvCam(cam.id);
-    // Deliberate pacing between every request (not just retries) — reduces
-    // the sustained rate of requests/tokens sent per minute, since repeated
-    // failures even when fully sequential point at a token-per-minute ceiling
-    // that back-to-back requests were still exceeding.
-    await new Promise(r => setTimeout(r, 1500));
+  const btn = document.getElementById('analyzeAllCctvBtn');
+  btn.disabled = true;
+  try {
+    for(const cam of todo) {
+      try {
+        await analyzeCctvCam(cam.id);
+      } catch(e) {
+        // analyzeCctvCam already catches its own errors and resolves rather
+        // than rejects. This outer guard is a second safety net so that even
+        // a genuinely unexpected failure can't abort the batch and strand
+        // every camera after it unanalyzed -- we log and keep going instead.
+        console.error('Unexpected failure analyzing camera', cam.id, '-- continuing with remaining cameras:', e);
+      }
+      // Deliberate pacing between every request (not just retries) — reduces
+      // the sustained rate of requests/tokens sent per minute, since repeated
+      // failures even when fully sequential point at a token-per-minute ceiling
+      // that back-to-back requests were still exceeding.
+      await new Promise(r => setTimeout(r, 1500));
+    }
+  } finally {
+    drawMap(); buildCctvScore(); buildCctvNarrative();
+    btn.textContent = 'RE-ANALYZE';
+    checkAnalyzeAll();
   }
-  drawMap(); buildCctvScore(); buildCctvNarrative();
-  document.getElementById('analyzeAllCctvBtn').textContent = 'RE-ANALYZE';
-  checkAnalyzeAll();
+  const stillFailed = todo.filter(c => c.analysisFailed);
+  if (stillFailed.length) {
+    alert(`${stillFailed.length} of ${todo.length} camera(s) failed to analyze even after retrying (likely a rate limit or brief server issue, not a bad photo):\n\n${stillFailed.map(c=>c.name).join('\n')}\n\nThese show generic placeholder findings in the report. Clicking Analyze All / Re-Analyze again will retry just these cameras.`);
+  }
 }
 
 async function analyzeCctvCam(idx) {
   const cam = cctvCameras.find(c=>c.id===idx); if(!cam || !cam.img) return;
-  const badge = document.getElementById('cb-'+idx);
-  const card = document.getElementById('cc-'+idx);
-  badge.className='badge b-scan'; badge.textContent='ANALYZING\u2026';
-  card.classList.add('analyzing');
-  const iw = card.querySelector('.cctv-img-wrap');
-  if(iw){ const so=document.createElement('div'); so.className='scan-ov'; so.id='so-'+idx;
-    so.innerHTML='<div class="scan-line"></div><div class="scan-txt">AI SCANNING\u2026</div>'; iw.appendChild(so); }
-  const prompt = `You are a professional security consultant analyzing a CCTV camera image for a commercial property.
+  // Everything -- including the initial DOM lookups -- now lives inside one
+  // try/catch. Previously the badge/card lookups and the UI updates that used
+  // them ran *before* the try block: if either element was ever missing (a
+  // stale card, a rename/remove race, any future markup change) this threw an
+  // uncaught exception that propagated straight out of this function, up
+  // through analyzeAllCctv's plain `for` loop, and killed the entire batch --
+  // every camera after the failed one silently never got analyzed, with no
+  // error shown and the button stuck disabled. Guarding every DOM access with
+  // `if (el)` and keeping it all inside try/catch means a problem with one
+  // camera can never take down the rest of the batch.
+  let badge, card;
+  try {
+    badge = document.getElementById('cb-'+idx);
+    card = document.getElementById('cc-'+idx);
+    if (badge) { badge.className='badge b-scan'; badge.textContent='ANALYZING\u2026'; }
+    if (card) card.classList.add('analyzing');
+    const iw = card ? card.querySelector('.cctv-img-wrap') : null;
+    if(iw){ const so=document.createElement('div'); so.className='scan-ov'; so.id='so-'+idx;
+      so.innerHTML='<div class="scan-line"></div><div class="scan-txt">AI SCANNING\u2026</div>'; iw.appendChild(so); }
+    const prompt = `You are a professional security consultant analyzing a CCTV camera image for a commercial property.
 Camera location: ${cam.zone} (${cam.level})
 Respond ONLY with valid JSON (no markdown):
 {"overallScore":<0-100>,"placement":{"score":<0-100>,"assessment":"<1 sentence>"},"coverage":{"score":<0-100>,"fovDegrees":<number>,"estimatedRangeMeters":<number>,"assessment":"<1 sentence>"},"imageQuality":{"score":<0-100>,"resolution":"<SD/HD/4K/Unknown>","nightVision":"<Yes/No/Unknown>","assessment":"<1 sentence>"},"blindSpots":["<blind spot>"],"vulnerabilities":[{"severity":"<critical|warning|info>","issue":"<title>","detail":"<1-2 sentences>"}],"positives":["<positive>"],"annotations":[{"type":"<critical|warning|info|good>","label":"<max 18 chars>","x":<0-100>,"y":<0-100>,"w":<5-40>,"h":<5-40>}],"recommendations":["<recommendation>"],"summary":"<2-3 sentence professional summary>"}`;
-  try {
     const data = await fetchWithRetry({max_tokens:2000,content:[
         {type:'image',source:{type:'base64',media_type:getMedia(cam.img),data:cam.img.split(',')[1]}},
         {type:'text',text:prompt}]});
     let raw = data.content?.find(b=>b.type==='text')?.text||'{}';
     let p; try{p=extractJsonLoose(raw);}catch(e){console.warn('CCTV camera', idx, ': could not parse AI response as JSON. Raw response was:', raw); p=fallbackCctv(cam.zone);}
     cam.analysis = p;
+    cam.analysisFailed = false;
     const so=document.getElementById('so-'+idx); if(so)so.remove();
-    card.classList.remove('analyzing'); card.classList.add('analyzed');
-    badge.className='badge b-done'; badge.textContent='ANALYZED';
+    if (card) { card.classList.remove('analyzing'); card.classList.add('analyzed'); }
+    if (badge) { badge.className='badge b-done'; badge.textContent='ANALYZED'; }
     renderCctvAnnotations(idx, p.annotations||[]);
     renderCctvFindings(idx, p);
     renderCctvMetrics(idx, p);
   } catch(e) {
     console.error('CCTV analysis error for camera', idx, 'after retries:', e.message);
     const so=document.getElementById('so-'+idx); if(so)so.remove();
-    badge.className='badge b-err'; badge.textContent='ERROR';
+    if (card) card.classList.remove('analyzing');
+    if (badge) { badge.className='badge b-err'; badge.textContent='ERROR'; }
     cam.analysis = fallbackCctv(cam.zone);
+    cam.analysisFailed = true;
     renderCctvFindings(idx, cam.analysis);
   }
 }
