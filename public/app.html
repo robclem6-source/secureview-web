@@ -64,6 +64,8 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .zone-label{font-size:11px;font-weight:600;color:var(--white)}
 .zone-hint{font-size:9px;color:var(--muted)}
 .zone-rename-input{width:100%;background:transparent;border:1px solid transparent;color:var(--white);font-size:10px;font-family:'IBM Plex Sans',sans-serif;padding:2px 4px;border-radius:3px;text-align:center;margin-top:2px;position:relative;z-index:2}
+.tile-delete-btn{position:absolute;top:6px;right:6px;width:20px;height:20px;background:rgba(10,10,10,.75);border:1px solid var(--border);color:var(--muted);border-radius:4px;cursor:pointer;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;z-index:3;transition:all .15s}
+.tile-delete-btn:hover{border-color:var(--red);color:var(--red);background:rgba(248,81,73,.12)}
 .zone-rename-input:hover{border-color:var(--border)}
 .zone-rename-input:focus{border-color:var(--accent);outline:none;background:var(--dark)}
 .cctv-name-input{background:transparent;border:1px solid transparent;color:var(--white);font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;padding:2px 4px;border-radius:3px;flex:1;min-width:80px}
@@ -985,14 +987,48 @@ let dynamicCptedCount = 0;
 
 function triggerCpted(e, z){ if(e) e.stopPropagation(); document.getElementById('cf-'+z).click(); }
 
+const FIXED_ZONE_META = {
+  lighting:    { icon: '&#128161;', hint: 'Exterior &amp; pathway lighting' },
+  landscaping: { icon: '&#127807;', hint: 'Shrubs, trees, sight lines' },
+  entry:       { icon: '&#128682;', hint: 'Front access &amp; visibility' },
+  perimeter:   { icon: '&#128306;', hint: 'Fencing, barriers, boundaries' },
+  parking:     { icon: '&#127359;', hint: 'Lot layout &amp; surveillance lines' },
+  loading:     { icon: '&#128666;', hint: 'Rear dock, service access' },
+  signage:     { icon: '&#9888;&#65039;', hint: 'Security notices, wayfinding' },
+  other:       { icon: '&#10133;', hint: 'Any additional area' }
+};
+
 function applyCptedZonePreview(zone, compressedDataUrl) {
   cptedImages[zone] = cptedImages[zone] || {};
   cptedImages[zone].data = compressedDataUrl;
   const el = document.getElementById('cz-'+zone);
   if (!el) return;
   el.classList.add('has-image');
+  el.classList.remove('upload-error');
   const label = CPTED_LABELS[zone] || zone;
-  el.innerHTML = `<img src="${compressedDataUrl}" class="preview-img"><div class="img-ok">&#10003; CAPTURED</div><input type="text" class="zone-rename-input" value="${escAttr(label)}" onclick="event.stopPropagation()" onchange="renameCptedZone('${zone}',this.value)" title="Click to rename this zone"><select class="zone-level-select" data-dynamic="${CPTED_LABELS[zone]&&!zone.startsWith('custom')?'0':'1'}" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+  el.innerHTML = `<button type="button" class="tile-delete-btn" onclick="event.stopPropagation();removeCptedZonePhoto('${zone}')" title="Delete this photo">&#10005;</button><img src="${compressedDataUrl}" class="preview-img"><div class="img-ok">&#10003; CAPTURED</div><input type="text" class="zone-rename-input" value="${escAttr(label)}" onclick="event.stopPropagation()" onchange="renameCptedZone('${zone}',this.value)" title="Click to rename this zone"><select class="zone-level-select" data-dynamic="${CPTED_LABELS[zone]&&!zone.startsWith('custom')?'0':'1'}" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+}
+
+// Deletes an uploaded photo for a zone. Custom (bulk-added or "+ ADD ZONE") tiles
+// are removed entirely since they only exist to hold one photo. Built-in zones
+// (Lighting, Parking, etc.) can't be removed — they revert to their original
+// empty upload state instead, keeping any rename the user had already given them.
+function removeCptedZonePhoto(zone) {
+  const isCustom = zone.startsWith('custom');
+  delete cptedImages[zone];
+  delete cptedZoneResults[zone];
+  const el = document.getElementById('cz-'+zone);
+  if (isCustom) {
+    if (el) el.remove();
+    delete CPTED_LABELS[zone];
+  } else if (el) {
+    el.classList.remove('has-image','analyzed','analyzing','upload-error');
+    const meta = FIXED_ZONE_META[zone] || { icon: '&#10133;', hint: '' };
+    const label = CPTED_LABELS[zone] || zone;
+    el.innerHTML = `<span class="zone-icon">${meta.icon}</span><div class="zone-label">${escAttr(label)}</div><div class="zone-hint">${meta.hint}</div><select class="zone-level-select" data-dynamic="0" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+  }
+  refreshAllLevelSelects();
+  updateCptedCount();
 }
 
 function renameCptedZone(zone, newName) {
@@ -1010,7 +1046,7 @@ function markCptedZoneFailed(zone, errorMsg) {
   el.classList.remove('has-image','analyzing','analyzed');
   el.classList.add('upload-error');
   const label = CPTED_LABELS[zone] || zone;
-  el.innerHTML = `<span class="zone-icon">&#9888;&#65039;</span><div class="zone-label" style="color:var(--red)">Could not read photo</div><div class="zone-hint" style="color:var(--red);line-height:1.4">${escAttr(errorMsg)}</div><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+  el.innerHTML = `<button type="button" class="tile-delete-btn" onclick="event.stopPropagation();removeCptedZonePhoto('${zone}')" title="Remove this zone">&#10005;</button><span class="zone-icon">&#9888;&#65039;</span><div class="zone-label" style="color:var(--red)">Could not read photo</div><div class="zone-hint" style="color:var(--red);line-height:1.4">${escAttr(errorMsg)}</div><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
 }
 
 function handleCptedUpload(input, zone) {
@@ -1251,7 +1287,9 @@ async function analyzeCpted() {
       const before = cptedZoneResults[zone];
       await analyzeCptedZone(zone, obj, multiLevel);
       if (cptedZoneResults[zone]?.summary?.includes('after retries')) cptedZoneFailCount++;
-    }, 2, (done, total) => { btn.textContent = `ANALYZING ${done}/${total}...` + (cptedZoneFailCount ? ` (${cptedZoneFailCount} retrying/failed)` : ''); });
+      // Deliberate pacing between every request, same reasoning as the CCTV loop.
+      await new Promise(r => setTimeout(r, 1500));
+    }, 1, (done, total) => { btn.textContent = `ANALYZING ${done}/${total}...` + (cptedZoneFailCount ? ` (${cptedZoneFailCount} retrying/failed)` : ''); });
 
     btn.textContent = 'SYNTHESIZING...';
 
@@ -1402,6 +1440,7 @@ function renderCctvCard(cam) {
       <input type="text" class="cctv-name-input" value="${escAttr(cam.name)}" onchange="renameCctvCamera(${cam.id},this.value)" title="Click to rename this camera">
       <select class="cctv-level-select" id="ccl-${cam.id}" onchange="setCctvLevel(${cam.id}, this.value)"></select>
       <span class="badge b-wait" id="cb-${cam.id}">AWAITING IMAGE</span>
+      <button type="button" class="tile-delete-btn" style="position:static;flex-shrink:0" onclick="removeCctvCamera(${cam.id})" title="Delete this camera">&#10005;</button>
     </div>
     <div class="cctv-drop" id="cd-${cam.id}"><span style="font-size:24px">&#128247;</span><div style="font-size:11px;font-weight:600;color:var(--white)">Upload camera photo or screenshot</div><div style="font-size:9px;color:var(--muted)">Photo of unit, mount, or live feed</div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${cam.id})"></div>
     <div class="cctv-findings" id="cf-${cam.id}"></div>`;
@@ -1417,6 +1456,13 @@ function renameCctvCamera(id, newName) {
   const cam = cctvCameras.find(c=>c.id===id);
   const trimmed = (newName || '').trim();
   if (cam && trimmed) { cam.name = trimmed; drawMap(); }
+}
+
+function removeCctvCamera(id) {
+  cctvCameras = cctvCameras.filter(c => c.id !== id);
+  const card = document.getElementById('cc-'+id);
+  if (card) card.remove();
+  updateCctvCount(); checkAnalyzeAll(); drawMap(); renderMapLevelTabs();
 }
 
 function initCctvCameras() {
@@ -1489,7 +1535,14 @@ async function analyzeAllCctv() {
   const todo = cctvCameras.filter(c=>c.img&&!c.analysis);
   if(!todo.length) return;
   document.getElementById('analyzeAllCctvBtn').disabled = true;
-  for(const cam of todo) await analyzeCctvCam(cam.id);
+  for(const cam of todo) {
+    await analyzeCctvCam(cam.id);
+    // Deliberate pacing between every request (not just retries) — reduces
+    // the sustained rate of requests/tokens sent per minute, since repeated
+    // failures even when fully sequential point at a token-per-minute ceiling
+    // that back-to-back requests were still exceeding.
+    await new Promise(r => setTimeout(r, 1500));
+  }
   drawMap(); buildCctvScore(); buildCctvNarrative();
   document.getElementById('analyzeAllCctvBtn').textContent = 'RE-ANALYZE';
   checkAnalyzeAll();
