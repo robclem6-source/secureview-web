@@ -1144,9 +1144,13 @@ Evaluate ONLY what is visible in this photo against the four CPTED principles (n
 // firing many vision requests in quick succession, or an occasional slow
 // response. One retry with a short backoff resolves the vast majority of these
 // without meaningfully slowing down the common case where nothing fails.
-async function fetchWithRetry(body, retries = 2, backoffMs = 1200) {
+async function fetchWithRetry(body, maxRetries429 = 4, maxRetries5xx = 2) {
   let lastErr;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  let retry429Count = 0, retry5xxCount = 0;
+  let attempt = 0;
+  const maxAttempts = 1 + maxRetries429 + maxRetries5xx; // safety ceiling
+  while (attempt < maxAttempts) {
+    attempt++;
     let resp, data;
     try {
       resp = await fetch(API, {
@@ -1155,18 +1159,34 @@ async function fetchWithRetry(body, retries = 2, backoffMs = 1200) {
       });
       data = await resp.json();
     } catch (networkErr) {
-      // Genuine network failure (offline, DNS, etc.) — always worth retrying.
+      // Genuine network failure (offline, DNS, etc.) — short backoff, a few tries.
       lastErr = networkErr;
-      if (attempt < retries) { await new Promise(r=>setTimeout(r, backoffMs*(attempt+1))); continue; }
+      if (retry5xxCount < maxRetries5xx) { retry5xxCount++; await new Promise(r=>setTimeout(r, 1500*retry5xxCount)); continue; }
       throw lastErr;
     }
     if (resp.ok && !data.error) return data;
-    // Got a real response, just not a success. Only retry the transient cases
-    // (rate limit / server overload) — a bad request or bad key will fail the
-    // same way every time, so retrying it just wastes time.
+
     const msg = data.error || `Server returned HTTP ${resp.status}`;
-    const retryable = resp.status === 429 || resp.status >= 500;
-    if (retryable && attempt < retries) { lastErr = new Error(msg); await new Promise(r=>setTimeout(r, backoffMs*(attempt+1))); continue; }
+    if (resp.status === 429) {
+      // Rate limits reset on a real time window (often per-minute), not in a couple
+      // seconds — the old 1.2-3.6s backoff here was nowhere near long enough, which
+      // is why large batches (50+ images) kept failing even with "retries." Honor
+      // Anthropic's own retry-after value when given; otherwise wait long enough
+      // (8s, growing) for a per-minute window to plausibly have reset.
+      if (retry429Count < maxRetries429) {
+        retry429Count++;
+        const waitSec = data.retryAfter ? Math.min(Number(data.retryAfter) + 1, 30) : Math.min(8 * retry429Count, 25);
+        lastErr = new Error(msg);
+        await new Promise(r=>setTimeout(r, waitSec*1000));
+        continue;
+      }
+      throw new Error(msg);
+    }
+    if (resp.status >= 500) {
+      if (retry5xxCount < maxRetries5xx) { retry5xxCount++; lastErr = new Error(msg); await new Promise(r=>setTimeout(r, 2000*retry5xxCount)); continue; }
+      throw new Error(msg);
+    }
+    // Non-retryable (bad request, bad key, etc.) — fails the same way every time.
     throw new Error(msg);
   }
   throw lastErr;

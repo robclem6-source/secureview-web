@@ -34,8 +34,12 @@ export default async function handler(req, res) {
     const data = await anthropicRes.json();
 
     if (!anthropicRes.ok) {
+      // Anthropic tells us exactly how long to wait on a rate limit via this header —
+      // forward it so the client can back off precisely instead of guessing.
+      const retryAfter = anthropicRes.headers.get('retry-after');
       return res.status(anthropicRes.status).json({
         error: data?.error?.message || 'Anthropic API request failed.',
+        retryAfter: retryAfter ? Number(retryAfter) : undefined,
       });
     }
 
