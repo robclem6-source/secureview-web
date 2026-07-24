@@ -2186,18 +2186,30 @@ async function buildAssessmentPdf() {
   const sevRGB = (s) => s==='critical'?PC.red : s==='warning'?PC.yellow : s==='good'?PC.green : PC.inkDim;
   const scoreRGB = (v) => v>=75?PC.green : v>=50?PC.yellow : PC.red;
 
-  // Collect + convert all photos we might embed (CPTED zone photos + CCTV camera photos)
+  // Collect + convert all photos we might embed (CPTED zone photos + CCTV camera photos).
+  // Tracks failures explicitly — this used to fail silently, meaning a large assessment
+  // could show "53 zones analyzed" but only include 20 photos in the PDF with zero
+  // indication of which ones were dropped or why.
+  const pdfPhotoFailures = [];
   const cptedPhotoBytes = {};
   for (const [zone, obj] of Object.entries(cptedImages)) {
+    if (!obj || !obj.data) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): no image data present`); continue; }
     const bytes = await pdfDataUrlToJpegBytes(obj.data);
-    if (bytes) { const d = pdfParseJpegDims(bytes); if (d) cptedPhotoBytes[zone] = { bytes, ...d }; }
+    if (!bytes) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): browser could not re-encode this image for the PDF`); continue; }
+    const d = pdfParseJpegDims(bytes);
+    if (!d) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): image dimensions could not be read`); continue; }
+    cptedPhotoBytes[zone] = { bytes, ...d };
   }
   const cctvPhotoBytes = {};
   for (const cam of cctvCameras) {
     if (!cam.img) continue;
     const bytes = await pdfDataUrlToJpegBytes(cam.img);
-    if (bytes) { const d = pdfParseJpegDims(bytes); if (d) cctvPhotoBytes[cam.id] = { bytes, ...d }; }
+    if (!bytes) { pdfPhotoFailures.push(`${cam.name} (CCTV): browser could not re-encode this image for the PDF`); continue; }
+    const d = pdfParseJpegDims(bytes);
+    if (!d) { pdfPhotoFailures.push(`${cam.name} (CCTV): image dimensions could not be read`); continue; }
+    cctvPhotoBytes[cam.id] = { bytes, ...d };
   }
+  window._lastPdfPhotoFailures = pdfPhotoFailures; // read by exportReport() after this completes
 
   const imageRefsPerPage = [];
   let currentPageImageRefs = new Set();
@@ -2822,6 +2834,11 @@ async function exportReport(evt) {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    const failures = window._lastPdfPhotoFailures || [];
+    if (failures.length) {
+      alert(`Report downloaded, but ${failures.length} photo(s) could not be included in the PDF:\n\n${failures.join('\n')}\n\nThese zones/cameras still have their AI findings in the report — just no embedded photo. This usually means the photo was uploaded before a recent fix, or is in a format the browser can't re-encode. Try re-uploading that specific photo and running Export again.`);
+    }
   } catch (e) {
     console.error('PDF export failed:', e);
     alert('Report generation failed: ' + e.message + '\n\nCheck the browser console (F12) for detail.');
