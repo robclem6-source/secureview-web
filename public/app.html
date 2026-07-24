@@ -765,6 +765,13 @@ select.form-input option{background:var(--dark)}
     <input class="form-input" id="propNameInput" placeholder="Property name / address" style="font-size:11px;padding:6px 9px" oninput="document.getElementById('propDisplay').textContent=this.value||'COMMERCIAL PROPERTY ASSESSMENT'">
   </div>
   <div class="sb-section">
+    <div class="sb-label">Save / Load Project</div>
+    <button class="btn-ghost" onclick="saveProject()" style="width:100%;margin-bottom:6px;font-size:9px">&#128190; SAVE PROJECT</button>
+    <button class="btn-ghost" onclick="triggerLoadProject()" style="width:100%;margin-bottom:6px;font-size:9px">&#128194; LOAD PROJECT</button>
+    <input type="file" accept="application/json,.json" id="loadProjectInput" style="display:none" onchange="loadProject(this)">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5" id="projectStatus">Save downloads everything (photos, renames, levels, results) as one file. Load it later to pick up exactly where you left off.</div>
+  </div>
+  <div class="sb-section">
     <div class="sb-label">Full Assessment</div>
     <button class="btn-primary" id="runFullBtn" onclick="runFullAssessment()" style="width:100%;margin-bottom:6px;font-size:13px;justify-content:center">&#9889; RUN ALL &amp; BUILD REPORT</button>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-bottom:6px" id="runFullStatus">Runs CPTED, CCTV, Guard &amp; Access Control in sequence, then generates one combined PDF.</div>
@@ -1029,15 +1036,23 @@ function handleCptedUpload(input, zone) {
 }
 
 // Creates a new empty custom-zone tile (DOM only, no photo yet) and returns its zone key.
-function createCptedZoneSlot(hintText) {
-  dynamicCptedCount++;
-  const zone = 'custom'+dynamicCptedCount;
-  CPTED_LABELS[zone] = 'Custom area '+dynamicCptedCount;
+function createCptedZoneSlot(hintText, explicitZone) {
+  let zone, num;
+  if (explicitZone) {
+    zone = explicitZone;
+    num = (CPTED_LABELS[zone] && /Custom area (\d+)/.exec(CPTED_LABELS[zone])?.[1]) || '';
+    if (!CPTED_LABELS[zone]) CPTED_LABELS[zone] = 'Custom area';
+  } else {
+    dynamicCptedCount++;
+    zone = 'custom'+dynamicCptedCount;
+    num = dynamicCptedCount;
+    CPTED_LABELS[zone] = 'Custom area '+dynamicCptedCount;
+  }
   const grid = document.getElementById('cptedGrid');
   const el = document.createElement('div');
   el.className = 'upload-zone'; el.id = 'cz-'+zone;
   el.setAttribute('onclick', `triggerCpted(event,'${zone}')`);
-  el.innerHTML = `<span class="zone-icon">&#10133;</span><div class="zone-label">Custom Area ${dynamicCptedCount}</div><div class="zone-hint">${hintText || 'e.g. ramp, stairwell, vertical circulation'}</div><select class="zone-level-select" data-dynamic="1" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
+  el.innerHTML = `<span class="zone-icon">&#10133;</span><div class="zone-label">Custom Area ${num}</div><div class="zone-hint">${hintText || 'e.g. ramp, stairwell, vertical circulation'}</div><select class="zone-level-select" data-dynamic="1" data-zone="${zone}" onclick="event.stopPropagation()" onchange="setCptedLevel('${zone}',this.value)" id="czl-${zone}"></select><input type="file" accept="image/*" id="cf-${zone}" onchange="handleCptedUpload(this,'${zone}')">`;
   grid.appendChild(el);
   return zone;
 }
@@ -2561,6 +2576,186 @@ async function buildAssessmentPdf() {
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
   return out;
+}
+
+// ═══════════════════════════════════════════
+// SAVE / LOAD PROJECT
+// Serializes the full working state — every uploaded photo, every rename,
+// levels, all four sections' inputs, and any completed AI results — to a
+// single downloadable .json file. Re-loading it restores everything exactly,
+// so a large property (60+ photos, all individually renamed) never has to be
+// rebuilt from scratch. This is a file download, not browser storage, so it
+// isn't subject to localStorage's ~5-10MB size ceiling.
+// ═══════════════════════════════════════════
+
+function collectProjectState() {
+  return {
+    savedAt: new Date().toISOString(),
+    propertyName: document.getElementById('propNameInput')?.value || '',
+    propertyLevels,
+    cptedLabels: CPTED_LABELS,
+    dynamicCptedCount,
+    cptedImages,
+    cctvCameras,
+    nextCctvId,
+    guardFields: {
+      company: document.getElementById('g-company')?.value,
+      contract: document.getElementById('g-contract')?.value,
+      count: document.getElementById('g-count')?.value,
+      cost: document.getElementById('g-cost')?.value,
+      patrol: document.getElementById('g-patrol')?.value,
+      freq: document.getElementById('g-freq')?.value,
+      renewal: document.getElementById('g-renewal')?.value,
+      rate: document.getElementById('g-rate')?.value,
+      armed: document.getElementById('g-armed')?.value,
+      reporting: document.getElementById('g-reporting')?.value,
+      tour: document.getElementById('g-tour')?.value,
+      video: document.getElementById('g-video')?.value,
+      firstaid: document.getElementById('g-firstaid')?.checked,
+      shooter: document.getElementById('g-shooter')?.checked,
+      radio: document.getElementById('g-radio')?.checked,
+      conflict: document.getElementById('g-conflict')?.checked,
+      notes: document.getElementById('g-notes')?.value,
+    },
+    guardZones,
+    nextGuardZoneId,
+    selectedAcTypes: [...selectedAcTypes],
+    acSystemDetails,
+    acAudit: document.getElementById('ac-audit')?.value,
+    acOffboard: document.getElementById('ac-offboard')?.value,
+    acZones,
+    nextAcZoneId,
+    scores,
+    resultData,
+    cptedZoneResults,
+  };
+}
+
+function saveProject() {
+  try {
+    const state = collectProjectState();
+    const json = JSON.stringify(state);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const nameSlug = (state.propertyName || 'property').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'property';
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `secureview-project-${nameSlug}-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  } catch (e) {
+    console.error('Save project failed:', e);
+    alert('Could not save project: ' + e.message);
+  }
+}
+
+function triggerLoadProject() { document.getElementById('loadProjectInput').click(); }
+
+async function loadProject(input) {
+  const file = input.files[0]; if (!file) return;
+  const statusEl = document.getElementById('projectStatus');
+  try {
+    const text = await file.text();
+    const state = JSON.parse(text);
+    restoreProjectState(state);
+    if (statusEl) statusEl.textContent = `Loaded project saved ${new Date(state.savedAt).toLocaleString()}.`;
+  } catch (e) {
+    console.error('Load project failed:', e);
+    alert('Could not load this project file: ' + e.message + '\n\nMake sure this is a .json file saved from this app.');
+  } finally {
+    input.value = '';
+  }
+}
+
+function restoreProjectState(state) {
+  // --- Property + levels ---
+  const propInput = document.getElementById('propNameInput');
+  if (propInput) { propInput.value = state.propertyName || ''; document.getElementById('propDisplay').textContent = state.propertyName || 'COMMERCIAL PROPERTY ASSESSMENT'; }
+  propertyLevels = state.propertyLevels && state.propertyLevels.length ? state.propertyLevels : ['Level 1','Level 2'];
+  renderLevelsConfig();
+
+  // --- CPTED ---
+  Object.assign(CPTED_LABELS, state.cptedLabels || {});
+  dynamicCptedCount = state.dynamicCptedCount || 0;
+  cptedImages = {};
+  document.querySelectorAll('.upload-zone').forEach(el => {
+    // Remove any dynamically-created custom zone tiles from a previous session before rebuilding.
+    if (el.id.startsWith('cz-custom')) el.remove();
+  });
+  const savedCptedImages = state.cptedImages || {};
+  for (const [zone, obj] of Object.entries(savedCptedImages)) {
+    if (!document.getElementById('cz-'+zone)) createCptedZoneSlot(undefined, zone);
+    cptedImages[zone] = { data: obj.data, level: obj.level };
+  }
+  refreshAllLevelSelects();
+  for (const [zone, obj] of Object.entries(savedCptedImages)) {
+    applyCptedZonePreview(zone, obj.data);
+    const lvSel = document.getElementById('czl-'+zone);
+    if (lvSel) lvSel.value = obj.level;
+  }
+  updateCptedCount();
+
+  // --- CCTV ---
+  cctvCameras = [];
+  nextCctvId = state.nextCctvId || 0;
+  document.getElementById('cctvGrid').innerHTML = '';
+  for (const cam of (state.cctvCameras || [])) {
+    cctvCameras.push(cam);
+    renderCctvCard(cam);
+    if (cam.img) applyCctvCardPreview(cam.id, cam.img);
+    if (cam.analysis) {
+      const badge = document.getElementById('cb-'+cam.id);
+      const card = document.getElementById('cc-'+cam.id);
+      if (badge) { badge.className='badge b-done'; badge.textContent='ANALYZED'; }
+      if (card) card.classList.add('analyzed');
+      renderCctvAnnotations(cam.id, cam.analysis.annotations||[]);
+      renderCctvFindings(cam.id, cam.analysis);
+      renderCctvMetrics(cam.id, cam.analysis);
+    }
+  }
+  refreshAllLevelSelects();
+  updateCctvCount(); checkAnalyzeAll();
+  if (cctvCameras.some(c=>c.analysis)) { buildCctvScore(); buildCctvNarrative(); }
+  renderMapLevelTabs(); drawMap();
+
+  // --- Guard ---
+  const gf = state.guardFields || {};
+  const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.value = v; };
+  const setChecked = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.checked = v; };
+  setVal('g-company', gf.company); setVal('g-contract', gf.contract); setVal('g-count', gf.count);
+  setVal('g-cost', gf.cost); setVal('g-patrol', gf.patrol); setVal('g-freq', gf.freq);
+  setVal('g-renewal', gf.renewal); setVal('g-rate', gf.rate); setVal('g-armed', gf.armed);
+  setVal('g-reporting', gf.reporting); setVal('g-tour', gf.tour); setVal('g-video', gf.video);
+  setChecked('g-firstaid', gf.firstaid); setChecked('g-shooter', gf.shooter);
+  setChecked('g-radio', gf.radio); setChecked('g-conflict', gf.conflict);
+  setVal('g-notes', gf.notes);
+  guardZones = state.guardZones && state.guardZones.length ? state.guardZones : guardZones;
+  nextGuardZoneId = state.nextGuardZoneId || nextGuardZoneId;
+  renderGuardZones();
+
+  // --- Access Control ---
+  selectedAcTypes = new Set(state.selectedAcTypes && state.selectedAcTypes.length ? state.selectedAcTypes : ['keyfob']);
+  acSystemDetails = state.acSystemDetails || {};
+  document.querySelectorAll('.ac-card').forEach(c => {
+    const t = c.id.replace('ac-type-','');
+    c.classList.toggle('selected', selectedAcTypes.has(t));
+  });
+  renderAcSystemDetails();
+  setVal('ac-audit', state.acAudit); setVal('ac-offboard', state.acOffboard);
+  acZones = state.acZones && state.acZones.length ? state.acZones : acZones;
+  nextAcZoneId = state.nextAcZoneId || nextAcZoneId;
+  renderAcZones();
+
+  // --- Results (re-display any already-completed AI analysis) ---
+  scores = state.scores || scores;
+  resultData = state.resultData || resultData;
+  cptedZoneResults = state.cptedZoneResults || {};
+  if (resultData.cpted) { renderCptedResults(resultData.cpted); document.getElementById('cptedResults')?.classList.remove('hidden'); }
+  if (resultData.guard) { renderGuardResults(resultData.guard); document.getElementById('guardResults')?.classList.remove('hidden'); }
+  if (resultData.access) { renderAcResults(resultData.access); document.getElementById('acResults')?.classList.remove('hidden'); }
+  updateSidebarScores();
 }
 
 // Runs all four section analyses in sequence, then builds the combined PDF —
