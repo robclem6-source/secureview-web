@@ -1316,21 +1316,31 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
 }`;
 
     let parsed;
-    try {
-      const data = await fetchWithRetry({max_tokens:4000, content:synthPrompt});
-      let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
-      parsed = extractJsonLoose(raw);
-      // A response can parse successfully as JSON but still be missing the
-      // fields we actually need (e.g. the model omitted overallScore while
-      // still producing syntactically valid JSON) — this happened at 62 zones
-      // and rendered as "undefined/100" / NaN instead of ever being caught.
-      if (typeof parsed.overallScore !== 'number' || Number.isNaN(parsed.overallScore)) {
-        throw new Error('Response parsed but is missing a valid overallScore field.');
+    let lastSynthError;
+    // Up to 2 full attempts: a malformed-JSON response (e.g. an unescaped quote
+    // inside a finding's text breaking the JSON structure) is a content-formatting
+    // slip, not a rate limit — regenerating the response often naturally avoids
+    // the same slip, since the model's wording isn't identical every time.
+    for (let synthAttempt = 0; synthAttempt < 2 && !parsed; synthAttempt++) {
+      try {
+        const data = await fetchWithRetry({max_tokens:4000, content:synthPrompt});
+        let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
+        const candidate = extractJsonLoose(raw);
+        // A response can parse successfully as JSON but still be missing the
+        // fields we actually need (e.g. the model omitted overallScore while
+        // still producing syntactically valid JSON) — this happened at 62 zones
+        // and rendered as "undefined/100" / NaN instead of ever being caught.
+        if (typeof candidate.overallScore !== 'number' || Number.isNaN(candidate.overallScore)) {
+          throw new Error('Response parsed but is missing a valid overallScore field.');
+        }
+        parsed = candidate;
+      } catch(e) {
+        lastSynthError = e;
+        console.warn(`CPTED synthesis attempt ${synthAttempt+1}/2 unusable —`, e.message);
       }
     }
-    catch(e) {
-      console.warn('CPTED synthesis: unusable —', e.message);
-      alert('CPTED synthesis failed or returned an incomplete response (this can happen with very large zone counts): ' + e.message + '\n\nShowing a score averaged from per-zone results instead. Check the console (F12) for detail.');
+    if (!parsed) {
+      alert('CPTED synthesis failed twice in a row (this can happen with very large zone counts): ' + (lastSynthError?.message||'unknown error') + '\n\nShowing a score averaged from per-zone results instead. Check the console (F12) for detail.');
       parsed = synthesizeCptedFallback(zoneSummaryForSynthesis);
     }
     renderCptedResults(parsed);
@@ -1362,16 +1372,23 @@ function synthesizeCptedFallback(zoneResults) {
     return vals.length ? Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) : 55;
   };
   const overall = Math.round(zoneResults.reduce((s,z)=>s+(z.zone_score||55),0)/Math.max(zoneResults.length,1));
-  const findings = zoneResults.flatMap(z => (z.findings||[]).map(f=>({severity:f.severity,area:z.zone,title:f.title,detail:f.detail})));
+  const severityRank = { critical: 0, warning: 1, good: 2 };
+  const findings = zoneResults
+    .flatMap(z => (z.findings||[]).map(f=>({severity:f.severity,area:z.zone,title:f.title,detail:f.detail})))
+    .sort((a,b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
   return {
     overallScore: overall,
     lighting: {score:avg('lighting'), assessment:'Averaged from per-zone results.'},
     naturalSurveillance: {score:avg('naturalSurveillance'), assessment:'Averaged from per-zone results.'},
     territorialReinforcement: {score:avg('territorialReinforcement'), assessment:'Averaged from per-zone results.'},
     accessManagement: {score:avg('accessManagement'), assessment:'Averaged from per-zone results.'},
-    findings: findings.slice(0,20),
-    recommendations: ['Full synthesis narrative unavailable — review per-zone findings above for detail.'],
-    summary: `Overall score averaged from ${zoneResults.length} zone-level assessments.`
+    // No cap here — every zone's findings are included (previously hardcoded to
+    // the first 20, which is exactly why large properties saw a "20 of N"
+    // pattern in the report even though every zone had actually been analyzed
+    // correctly). Sorted critical-first so the most important items lead.
+    findings: findings,
+    recommendations: ['Full synthesis narrative unavailable — review the complete findings list below, sorted by severity, for detail.'],
+    summary: `Overall score averaged from ${zoneResults.length} zone-level assessments (${findings.length} total findings across all zones, listed below by severity).`
   };
 }
 
