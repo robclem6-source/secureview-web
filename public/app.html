@@ -1315,15 +1315,10 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
   "summary": "<3-4 sentence professional CPTED assessment summary covering the whole property>"
 }`;
 
-    const resp = await fetch(API, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({max_tokens:4000, content:synthPrompt})
-    });
-    const data = await resp.json();
-    if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
-    let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     let parsed;
     try {
+      const data = await fetchWithRetry({max_tokens:4000, content:synthPrompt});
+      let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
       parsed = extractJsonLoose(raw);
       // A response can parse successfully as JSON but still be missing the
       // fields we actually need (e.g. the model omitted overallScore while
@@ -1334,8 +1329,8 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
       }
     }
     catch(e) {
-      console.warn('CPTED synthesis: response was unusable —', e.message, 'Raw:', raw);
-      alert('CPTED synthesis returned an incomplete response (this can happen with very large zone counts). Showing a score averaged from per-zone results instead. Check the console (F12) for detail.');
+      console.warn('CPTED synthesis: unusable —', e.message);
+      alert('CPTED synthesis failed or returned an incomplete response (this can happen with very large zone counts): ' + e.message + '\n\nShowing a score averaged from per-zone results instead. Check the console (F12) for detail.');
       parsed = synthesizeCptedFallback(zoneSummaryForSynthesis);
     }
     renderCptedResults(parsed);
