@@ -663,23 +663,22 @@ select.form-input option{background:var(--dark)}
     <div class="panel-sub">CURRENT ACCESS CONTROL TECHNOLOGY, CONFIGURATION &amp; CREDENTIAL MANAGEMENT (PROPERTY-WIDE)</div>
 
     <div style="margin-bottom:1rem">
-      <label class="form-label" style="margin-bottom:.6rem">Primary Access Control System Type</label>
+      <label class="form-label" style="margin-bottom:.6rem">Access Control System Types Present (select all that apply — properties often use different systems for different areas)</label>
       <div class="ac-system-grid">
-        <div class="ac-card selected" id="ac-type-keyfob" onclick="selectAcType('keyfob')"><div class="ac-card-icon">&#128268;</div><div class="ac-card-label">Key Fob / Card</div><div class="ac-card-hint">Proximity reader system</div></div>
-        <div class="ac-card" id="ac-type-pin" onclick="selectAcType('pin')"><div class="ac-card-icon">&#128290;</div><div class="ac-card-label">PIN / Keypad</div><div class="ac-card-hint">Code-based entry</div></div>
-        <div class="ac-card" id="ac-type-mobile" onclick="selectAcType('mobile')"><div class="ac-card-icon">&#128241;</div><div class="ac-card-label">Mobile Credential</div><div class="ac-card-hint">Bluetooth / NFC app</div></div>
-        <div class="ac-card" id="ac-type-biometric" onclick="selectAcType('biometric')"><div class="ac-card-icon">&#128100;</div><div class="ac-card-label">Biometric</div><div class="ac-card-hint">Fingerprint / facial</div></div>
-        <div class="ac-card" id="ac-type-traditional" onclick="selectAcType('traditional')"><div class="ac-card-icon">&#128273;</div><div class="ac-card-label">Traditional Keys</div><div class="ac-card-hint">Physical key locks</div></div>
-        <div class="ac-card" id="ac-type-none" onclick="selectAcType('none')"><div class="ac-card-icon">&#10060;</div><div class="ac-card-label">No System</div><div class="ac-card-hint">Open / uncontrolled access</div></div>
-        <div class="ac-card" id="ac-type-vehiclegate" onclick="selectAcType('vehiclegate')"><div class="ac-card-icon">&#128680;</div><div class="ac-card-label">Vehicle Gate / Pay Station</div><div class="ac-card-hint">Ticket-in, pay-and-exit</div></div>
+        <div class="ac-card selected" id="ac-type-keyfob" onclick="toggleAcType('keyfob')"><div class="ac-card-icon">&#128268;</div><div class="ac-card-label">Key Fob / Card</div><div class="ac-card-hint">Proximity reader system</div></div>
+        <div class="ac-card" id="ac-type-pin" onclick="toggleAcType('pin')"><div class="ac-card-icon">&#128290;</div><div class="ac-card-label">PIN / Keypad</div><div class="ac-card-hint">Code-based entry</div></div>
+        <div class="ac-card" id="ac-type-mobile" onclick="toggleAcType('mobile')"><div class="ac-card-icon">&#128241;</div><div class="ac-card-label">Mobile Credential</div><div class="ac-card-hint">Bluetooth / NFC app</div></div>
+        <div class="ac-card" id="ac-type-biometric" onclick="toggleAcType('biometric')"><div class="ac-card-icon">&#128100;</div><div class="ac-card-label">Biometric</div><div class="ac-card-hint">Fingerprint / facial</div></div>
+        <div class="ac-card" id="ac-type-traditional" onclick="toggleAcType('traditional')"><div class="ac-card-icon">&#128273;</div><div class="ac-card-label">Traditional Keys</div><div class="ac-card-hint">Physical key locks</div></div>
+        <div class="ac-card" id="ac-type-none" onclick="toggleAcType('none')"><div class="ac-card-icon">&#10060;</div><div class="ac-card-label">No System</div><div class="ac-card-hint">Open / uncontrolled access</div></div>
+        <div class="ac-card" id="ac-type-vehiclegate" onclick="toggleAcType('vehiclegate')"><div class="ac-card-icon">&#128680;</div><div class="ac-card-label">Vehicle Gate / Pay Station</div><div class="ac-card-hint">Ticket-in, pay-and-exit</div></div>
       </div>
+      <div style="font-size:10px;color:var(--muted);margin-top:8px">Click a card to select/deselect it. Each selected system gets its own detail panel below — e.g. Key Fob for office suites AND Vehicle Gate for the parking garage.</div>
     </div>
 
+    <div id="acSystemDetailsWrap"></div>
+
     <div class="form-grid">
-      <div class="form-group"><label class="form-label">System Manufacturer / Platform</label><input class="form-input" id="ac-brand" placeholder="e.g. Lenel, Honeywell, Brivo, Openpath"></div>
-      <div class="form-group"><label class="form-label">System Age (years)</label><input class="form-input" id="ac-age" type="number" placeholder="e.g. 5"></div>
-      <div class="form-group"><label class="form-label">Number of Controlled Entry Points</label><input class="form-input" id="ac-doors" type="number" placeholder="e.g. 12"></div>
-      <div class="form-group"><label class="form-label">Total Active Credentials</label><input class="form-input" id="ac-creds" type="number" placeholder="e.g. 185"></div>
       <div class="form-group"><label class="form-label">Last Credential Audit</label>
         <select class="form-input" id="ac-audit">
           <option value="never">Never conducted</option>
@@ -1251,10 +1250,19 @@ Synthesize these into one overall assessment. Respond ONLY with valid JSON (no m
     if (!resp.ok || data.error) throw new Error(data.error || `Server returned HTTP ${resp.status}`);
     let raw = data.content?.find(b=>b.type==='text')?.text || '{}';
     let parsed;
-    try { parsed = extractJsonLoose(raw); }
+    try {
+      parsed = extractJsonLoose(raw);
+      // A response can parse successfully as JSON but still be missing the
+      // fields we actually need (e.g. the model omitted overallScore while
+      // still producing syntactically valid JSON) — this happened at 62 zones
+      // and rendered as "undefined/100" / NaN instead of ever being caught.
+      if (typeof parsed.overallScore !== 'number' || Number.isNaN(parsed.overallScore)) {
+        throw new Error('Response parsed but is missing a valid overallScore field.');
+      }
+    }
     catch(e) {
-      console.warn('CPTED synthesis: could not parse AI response as JSON. Raw:', raw);
-      alert('CPTED synthesis returned a response that could not be read. Showing a score averaged from per-zone results instead. Check the console (F12) for detail.');
+      console.warn('CPTED synthesis: response was unusable —', e.message, 'Raw:', raw);
+      alert('CPTED synthesis returned an incomplete response (this can happen with very large zone counts). Showing a score averaged from per-zone results instead. Check the console (F12) for detail.');
       parsed = synthesizeCptedFallback(zoneSummaryForSynthesis);
     }
     renderCptedResults(parsed);
@@ -1807,7 +1815,15 @@ Evaluate this guard program and respond ONLY with valid JSON (no markdown):
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
-    let parsed; try{parsed=extractJsonLoose(raw);}catch(e){console.warn('Guard eval: could not parse AI response as JSON. Raw:', raw); alert('Guard evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackGuard();}
+    let parsed;
+    try {
+      parsed = extractJsonLoose(raw);
+      if (typeof parsed.overallScore !== 'number' || Number.isNaN(parsed.overallScore)) throw new Error('Response parsed but is missing a valid overallScore field.');
+    } catch(e) {
+      console.warn('Guard eval: response was unusable —', e.message, 'Raw:', raw);
+      alert('Guard evaluation returned an incomplete response. Showing placeholder results. Check the console (F12) for detail.');
+      parsed=fallbackGuard();
+    }
     renderGuardResults(parsed);
   } catch(e){
     alert('Guard evaluation failed: ' + e.message + '\n\nShowing placeholder results below.');
@@ -1841,13 +1857,60 @@ function renderGuardResults(a) {
 }
 
 // ═══════════════════════════════════════════
-// PAGE 4 — ACCESS CONTROL (per-zone entries)
+// PAGE 4 — ACCESS CONTROL (per-zone entries + multiple simultaneous system types)
 // ═══════════════════════════════════════════
-let selectedAcType = 'keyfob';
-function selectAcType(t) {
-  document.querySelectorAll('.ac-card').forEach(c=>c.classList.remove('selected'));
-  document.getElementById('ac-type-'+t).classList.add('selected');
-  selectedAcType = t;
+const AC_TYPE_META = {
+  keyfob:      { label: 'Key Fob / Card',            hasCredentials: true  },
+  pin:         { label: 'PIN / Keypad',               hasCredentials: true  },
+  mobile:      { label: 'Mobile Credential',          hasCredentials: true  },
+  biometric:   { label: 'Biometric',                  hasCredentials: true  },
+  traditional: { label: 'Traditional Keys',           hasCredentials: false },
+  none:        { label: 'No System',                  hasCredentials: false },
+  vehiclegate: { label: 'Vehicle Gate / Pay Station',  hasCredentials: false }
+};
+
+let selectedAcTypes = new Set(['keyfob']); // properties can have several systems at once
+let acSystemDetails = {}; // type id -> {manufacturer, age, doors, credentials, coverage}
+
+function toggleAcType(t) {
+  const card = document.getElementById('ac-type-'+t);
+  if (selectedAcTypes.has(t)) {
+    selectedAcTypes.delete(t);
+    card.classList.remove('selected');
+  } else {
+    selectedAcTypes.add(t);
+    card.classList.add('selected');
+  }
+  renderAcSystemDetails();
+}
+
+function updateAcSystemDetailField(t, field, val) {
+  acSystemDetails[t] = acSystemDetails[t] || {};
+  acSystemDetails[t][field] = val;
+}
+
+function renderAcSystemDetails() {
+  const wrap = document.getElementById('acSystemDetailsWrap');
+  if (!wrap) return;
+  const types = [...selectedAcTypes];
+  if (!types.length) { wrap.innerHTML = ''; return; }
+  wrap.innerHTML = types.map(t => {
+    const meta = AC_TYPE_META[t] || { label: t, hasCredentials: false };
+    const d = acSystemDetails[t] || {};
+    return `
+    <div class="zone-block" id="acdet-${t}">
+      <div class="zone-block-head">
+        <div class="zone-name-input" style="flex:1;background:transparent;border:none;cursor:default">${escAttr(meta.label)}</div>
+      </div>
+      <div class="form-grid">
+        <div class="form-group"><label class="form-label">Manufacturer / Platform</label><input class="form-input" value="${escAttr(d.manufacturer||'')}" oninput="updateAcSystemDetailField('${t}','manufacturer',this.value)" placeholder="e.g. Lenel, Honeywell, Brivo, Openpath"></div>
+        <div class="form-group"><label class="form-label">System Age (years)</label><input class="form-input" type="number" value="${escAttr(d.age||'')}" oninput="updateAcSystemDetailField('${t}','age',this.value)" placeholder="e.g. 5"></div>
+        <div class="form-group"><label class="form-label">Entry Points Controlled by This System</label><input class="form-input" type="number" value="${escAttr(d.doors||'')}" oninput="updateAcSystemDetailField('${t}','doors',this.value)" placeholder="e.g. 8"></div>
+        ${meta.hasCredentials ? `<div class="form-group"><label class="form-label">Active Credentials</label><input class="form-input" type="number" value="${escAttr(d.credentials||'')}" oninput="updateAcSystemDetailField('${t}','credentials',this.value)" placeholder="e.g. 120"></div>` : ''}
+        <div class="form-group full"><label class="form-label">Where This System Is Used</label><input class="form-input" value="${escAttr(d.coverage||'')}" oninput="updateAcSystemDetailField('${t}','coverage',this.value)" placeholder="e.g. Office suites and elevator lobby only"></div>
+      </div>
+    </div>`;
+  }).join('');
 }
 
 let acZones = [];
@@ -1917,41 +1980,38 @@ function renderAcZones() {
 }
 
 async function analyzeAccessControl() {
-  const data = {
-    type: selectedAcType,
-    brand: document.getElementById('ac-brand').value,
-    age: document.getElementById('ac-age').value,
-    doors: document.getElementById('ac-doors').value,
-    creds: document.getElementById('ac-creds').value,
-    audit: document.getElementById('ac-audit').value,
-    offboard: document.getElementById('ac-offboard').value,
-    cloud: document.getElementById('ac-cloud')?.value || 'hybrid',
-    issues: document.getElementById('ac-issues')?.value || ''
-  };
+  const audit = document.getElementById('ac-audit').value;
+  const offboard = document.getElementById('ac-offboard').value;
+
+  const systemsDesc = [...selectedAcTypes].map(t => {
+    const meta = AC_TYPE_META[t] || { label: t };
+    const d = acSystemDetails[t] || {};
+    const parts = [`Platform: ${d.manufacturer || 'Unknown'}`, `Age: ${d.age || 'Unknown'} years`, `Entry points controlled: ${d.doors || 'Unknown'}`];
+    if (meta.hasCredentials) parts.push(`Active credentials: ${d.credentials || 'Unknown'}`);
+    if (d.coverage) parts.push(`Used at: ${d.coverage}`);
+    return `- ${meta.label} \u2014 ${parts.join('; ')}`;
+  }).join('\n') || '- No system types selected.';
 
   const zoneDesc = acZones.map(z =>
     `- ${z.name}: entry security = ${z.mainSec}; after-hours = ${z.afterHours}; visitor mgmt = ${z.visitor}; sensitive-area access = ${z.sensitive}; door alarms = ${z.alarms}`
   ).join('\n');
 
-  const prompt = `You are a professional physical security consultant evaluating an access control system for a commercial property.
+  const prompt = `You are a professional physical security consultant evaluating the access control systems for a commercial property. This property may use MULTIPLE different access control system types simultaneously in different areas (e.g. key fob for office suites, a separate vehicle gate for the parking garage) — evaluate each system on its own merits, then form an overall assessment that also considers how well these systems work together and hand off control at the boundaries between them.
 
-Access Control Details (property-wide):
-- System Type: ${data.type}
-- Platform/Brand: ${data.brand||'Unknown'}
-- System Age: ${data.age||'Unknown'} years
-- Controlled Entry Points: ${data.doors||'Unknown'}
-- Active Credentials: ${data.creds||'Unknown'}
-- Last Credential Audit: ${data.audit}
-- Offboarding Process: ${data.offboard}
-- Known Issues: ${data.issues}
+Access Control Systems Present:
+${systemsDesc}
 
-Zone-by-zone access control (this property has distinct zones — evaluate the transitions BETWEEN zones as well, e.g. whether someone from a public/retail zone can move unrestricted into a parking or office zone):
+Property-wide credential governance:
+- Last Credential Audit: ${audit}
+- Offboarding Process: ${offboard}
+
+Zone-by-zone access control (this property has distinct zones — evaluate the transitions BETWEEN zones as well, e.g. whether someone from a public/retail zone can move unrestricted into a parking or office zone, and whether the right system type is actually controlling that specific transition):
 ${zoneDesc}
 
 Note on vehicle gates: a "ticket dispenser — anonymous vehicle entry" and "payment gate — pay-on-exit" are normal, expected configurations for a public pay parking garage and should NOT by themselves be scored as a credential-management failure — anonymous public vehicle entry is standard industry practice. Instead, focus evaluation on whether the PEDESTRIAN transition from that vehicle zone into the rest of the building (e.g. an elevator lobby) is properly credentialed and monitored, since that is the actual security boundary in a public-parking-into-private-building scenario. An "automatic roller door — scheduled nightly closure" is a genuine physical access control measure and should be credited accordingly, while noting any gaps such as lack of confirmed manual override procedures or emergency egress provisions if mentioned in the notes.
 
 Evaluate this access control system and respond ONLY with valid JSON (no markdown):
-{"overallScore":<0-100>,"credentialManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"entryPointSecurity":{"score":<0-100>,"assessment":"<1 sentence>"},"auditability":{"score":<0-100>,"assessment":"<1 sentence>"},"visitorManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"findings":[{"severity":"<critical|warning|good>","area":"<area, name the zone if relevant>","title":"<title>","detail":"<2 sentences>"}],"recommendations":["<recommendation 1>","<recommendation 2>","<recommendation 3>"],"summary":"<3-4 sentence professional evaluation summary>"}`;
+{"overallScore":<0-100>,"credentialManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"entryPointSecurity":{"score":<0-100>,"assessment":"<1 sentence>"},"auditability":{"score":<0-100>,"assessment":"<1 sentence>"},"visitorManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"findings":[{"severity":"<critical|warning|good>","area":"<area or system name, be specific>","title":"<title>","detail":"<2 sentences>"}],"recommendations":["<recommendation 1>","<recommendation 2>","<recommendation 3>"],"summary":"<3-4 sentence professional evaluation summary covering all systems present>"}`;
 
   try {
     const resp = await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1959,7 +2019,15 @@ Evaluate this access control system and respond ONLY with valid JSON (no markdow
     const d = await resp.json();
     if (!resp.ok || d.error) { throw new Error(d.error || `Server returned HTTP ${resp.status}`); }
     let raw = d.content?.find(b=>b.type==='text')?.text||'{}';
-    let parsed; try{parsed=extractJsonLoose(raw);}catch(e){console.warn('Access control eval: could not parse AI response as JSON. Raw:', raw); alert('Access control evaluation returned a response that could not be read. Showing placeholder results. Check the console (F12) for detail.'); parsed=fallbackAc();}
+    let parsed;
+    try {
+      parsed = extractJsonLoose(raw);
+      if (typeof parsed.overallScore !== 'number' || Number.isNaN(parsed.overallScore)) throw new Error('Response parsed but is missing a valid overallScore field.');
+    } catch(e) {
+      console.warn('Access control eval: response was unusable —', e.message, 'Raw:', raw);
+      alert('Access control evaluation returned an incomplete response. Showing placeholder results. Check the console (F12) for detail.');
+      parsed=fallbackAc();
+    }
     renderAcResults(parsed);
   } catch(e){
     alert('Access control evaluation failed: ' + e.message + '\n\nShowing placeholder results below.');
@@ -1989,12 +2057,14 @@ function sbd(label, val) {
 }
 
 function updateSidebarScores() {
-  const all = [scores.cpted, scores.cctv, scores.guard, scores.access].filter(v=>v!==null);
+  const all = [scores.cpted, scores.cctv, scores.guard, scores.access].filter(v => typeof v === 'number' && Number.isFinite(v));
   const labels = ['sb-s1','sb-s2','sb-s3','sb-s4'];
   const keys = ['cpted','cctv','guard','access'];
   keys.forEach((k,i) => {
     const el = document.getElementById(labels[i]);
-    if(scores[k]!==null){ el.textContent=scores[k]+'/100'; el.style.color=sc(scores[k]); }
+    const v = scores[k];
+    if (typeof v === 'number' && Number.isFinite(v)) { el.textContent = v+'/100'; el.style.color = sc(v); }
+    else if (v !== null) { el.textContent = 'error'; el.style.color = 'var(--red)'; }
   });
   if(all.length) {
     const avg = Math.round(all.reduce((a,b)=>a+b,0)/all.length);
@@ -2011,7 +2081,7 @@ const CHAT_CONTEXT = {
   1: () => `You are SecureView AI advising on CPTED (Crime Prevention Through Environmental Design) for a commercial property with levels: ${propertyLevels.join(', ')}. CPTED score: ${scores.cpted||'not yet assessed'}. Focus on environmental design, lighting, natural surveillance, and landscaping — including vertical circulation and level transitions if the property has multiple levels. Be specific and practical. Under 120 words.`,
   2: () => `You are SecureView AI advising on CCTV systems for a commercial property with levels: ${propertyLevels.join(', ')}. CCTV score: ${scores.cctv||'not yet assessed'}. Analyzed cameras: ${cctvCameras.filter(c=>c.analysis).map(c=>`${c.name} [${c.level}] (score: ${c.analysis?.overallScore})`).join(', ')||'none yet'}. Focus on camera placement, coverage gaps, and recording systems. Under 120 words.`,
   3: () => `You are SecureView AI advising on guard services for a commercial property in Portland, Oregon with zones: ${guardZones.map(z=>z.name).join(', ')}. Guard program score: ${scores.guard||'not yet assessed'}. Provider: ${document.getElementById('g-company')?.value||'unknown'}, monthly cost: $${document.getElementById('g-cost')?.value||'unknown'}, patrol type: ${document.getElementById('g-patrol')?.value||'unknown'}. Focus on contract terms, accountability, and program quality, including any zone-specific coverage gaps. Reference Oregon market rates where relevant. Under 120 words.`,
-  4: () => `You are SecureView AI advising on access control for a commercial property with zones: ${acZones.map(z=>z.name).join(', ')}. Access control score: ${scores.access||'not yet assessed'}. System type: ${selectedAcType}, last audit: ${document.getElementById('ac-audit')?.value||'unknown'}, offboarding: ${document.getElementById('ac-offboard')?.value||'unknown'}. Focus on credential management, door security, and zone-to-zone transition risks. Under 120 words.`
+  4: () => `You are SecureView AI advising on access control for a commercial property with zones: ${acZones.map(z=>z.name).join(', ')}. Access control score: ${scores.access||'not yet assessed'}. System types present: ${[...selectedAcTypes].map(t=>AC_TYPE_META[t]?.label||t).join(', ')||'none selected'}, last audit: ${document.getElementById('ac-audit')?.value||'unknown'}, offboarding: ${document.getElementById('ac-offboard')?.value||'unknown'}. Focus on credential management, door security, and zone-to-zone transition risks. Under 120 words.`
 };
 
 async function sendChat(page) {
@@ -2370,6 +2440,16 @@ async function buildAssessmentPdf() {
     sectionHeader('IV', 'Access Control System', a.overallScore);
     text(a.summary || '', { size:11, color:PC.inkDim, leading:1.55 });
     space(10);
+    if (selectedAcTypes && selectedAcTypes.size) {
+      need(14); line('SYSTEMS PRESENT', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const t of [...selectedAcTypes]) {
+        const meta = AC_TYPE_META[t] || { label: t };
+        const d = acSystemDetails[t] || {};
+        need(16);
+        text(`${meta.label}${d.coverage ? ' \u2014 ' + d.coverage : ''}${d.manufacturer ? ' (' + d.manufacturer + ')' : ''}`, { size:9.5, leading:1.4 });
+      }
+      space(6);
+    }
     const acBreak = [['Credential Management',a.credentialManagement?.score],['Entry Point Security',a.entryPointSecurity?.score],['Auditability',a.auditability?.score],['Visitor Management',a.visitorManagement?.score]];
     for (const [lbl,val] of acBreak) {
       if (val==null) continue;
@@ -2562,6 +2642,7 @@ initCctvCameras();
 renderMapLevelTabs();
 initGuardZones();
 initAcZones();
+renderAcSystemDetails();
 updateCptedCount();
 drawMap();
 </script>
