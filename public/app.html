@@ -880,18 +880,73 @@ function extractJsonLoose(text) {
     throw new Error('No JSON object found in response.');
   }
   let jsonStr = cleaned.substring(first, last + 1);
+  // Trailing commas before a closing brace/bracket are a common, harmless-to-fix
+  // LLM slip -- strip them before even attempting a parse.
+  jsonStr = jsonStr.replace(/,(\s*[}\]])/g, '$1');
   try {
     return JSON.parse(jsonStr);
-  } catch (e) {
-    // Common truncation case: response cut off mid-array/object. Try trimming back
-    // to the last complete top-level field before giving up.
-    const lastComma = jsonStr.lastIndexOf(',');
-    if (lastComma > first) {
-      const attempt = jsonStr.substring(0, lastComma) + '}';
-      try { return JSON.parse(attempt); } catch (e2) { /* fall through */ }
+  } catch (e1) {
+    // The far more common real-world failure here isn't truncation -- it's the
+    // model embedding a literal, unescaped " inside a string value (a quoted
+    // term, a measurement like 6", a sign that reads "CAUTION", etc). That
+    // breaks JSON.parse well before the end of the response, which is exactly
+    // what a "line 6 column N" / "Expected ',' or '}'" error looks like. Try a
+    // repair pass that walks the string and escapes quotes that don't actually
+    // look like they're closing a JSON string, then retry.
+    try {
+      const repaired = repairLooseJsonQuotes(jsonStr);
+      return JSON.parse(repaired);
+    } catch (e2) {
+      // Last resort: genuine truncation (response cut off mid-array/object).
+      // Trim back to the last complete top-level field before giving up.
+      const lastComma = jsonStr.lastIndexOf(',');
+      if (lastComma > first) {
+        const attempt = jsonStr.substring(0, lastComma) + '}';
+        try { return JSON.parse(attempt); } catch (e3) { /* fall through */ }
+      }
+      throw new Error('JSON parse failed: ' + e1.message);
     }
-    throw new Error('JSON parse failed: ' + e.message);
   }
+}
+
+// Best-effort repair for the most common way LLM-generated JSON breaks: a
+// literal, unescaped " inside a string value. Walks the string tracking
+// in-string state; when a quote is hit while already inside a string, it
+// looks ahead (skipping whitespace) at the next non-whitespace character --
+// if that's a structural JSON character ( , } ] : ) it's treated as a
+// genuine closing quote, otherwise it's a stray quote that gets escaped so
+// the string keeps going instead of breaking the parse.
+function repairLooseJsonQuotes(jsonStr) {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < jsonStr.length; i++) {
+    const ch = jsonStr[i];
+    if (ch === '\\' && inString) {
+      // Preserve existing escape sequences (\", \\, \n, etc.) as-is.
+      out += ch + (jsonStr[i+1] !== undefined ? jsonStr[i+1] : '');
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      if (!inString) { inString = true; out += ch; continue; }
+      let j = i + 1;
+      while (j < jsonStr.length && /\s/.test(jsonStr[j])) j++;
+      const next = jsonStr[j];
+      if (next === undefined || ',}]:'.includes(next)) {
+        inString = false;
+        out += ch;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    if (inString && (ch === '\n' || ch === '\r' || ch === '\t')) {
+      out += ch === '\n' ? '\\n' : ch === '\r' ? '\\r' : '\\t';
+      continue;
+    }
+    out += ch;
+  }
+  return out;
 }
 
 // ═══════════════════════════════════════════
@@ -1165,7 +1220,7 @@ function buildCptedZonePrompt(zone, obj, multiLevel) {
 Zone: ${label} (${obj.level})
 ${multiLevel ? `Note: this property has multiple levels (${propertyLevels.join(', ')}). If this zone photo shows vertical circulation (ramps, stairwells) or a level transition, weight your findings toward blind corners, sightlines, and unrestricted movement between levels.` : ''}
 
-Evaluate ONLY what is visible in this photo against the four CPTED principles (natural surveillance, natural access control, territorial reinforcement, maintenance). Respond ONLY with valid JSON (no markdown, no backticks):
+Evaluate ONLY what is visible in this photo against the four CPTED principles (natural surveillance, natural access control, territorial reinforcement, maintenance). Respond ONLY with valid JSON (no markdown, no backticks): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {
   "zone_score": <0-100>,
   "principle_scores": {"lighting": <0-100>, "naturalSurveillance": <0-100>, "territorialReinforcement": <0-100>, "accessManagement": <0-100>},
@@ -1339,7 +1394,7 @@ async function analyzeCpted() {
 ZONE FINDINGS (severity + short title only -- full detail was already reviewed by the field assessor):
 ${JSON.stringify(compactZonesForPrompt)}
 
-Synthesize these into one overall assessment narrative. Do NOT reproduce the individual findings list -- that is handled separately. Respond ONLY with valid JSON (no markdown, no backticks):
+Synthesize these into one overall assessment narrative. Do NOT reproduce the individual findings list -- that is handled separately. Respond ONLY with valid JSON (no markdown, no backticks): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {
   "overallScore": <0-100>,
   "lighting": {"score": <0-100>, "assessment": "<1 sentence>"},
@@ -1654,7 +1709,7 @@ async function analyzeCctvCam(idx) {
       so.innerHTML='<div class="scan-line"></div><div class="scan-txt">AI SCANNING\u2026</div>'; iw.appendChild(so); }
     const prompt = `You are a professional security consultant analyzing a CCTV camera image for a commercial property.
 Camera location: ${cam.zone} (${cam.level})
-Respond ONLY with valid JSON (no markdown):
+Respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {"overallScore":<0-100>,"placement":{"score":<0-100>,"assessment":"<1 sentence>"},"coverage":{"score":<0-100>,"fovDegrees":<number>,"estimatedRangeMeters":<number>,"assessment":"<1 sentence>"},"imageQuality":{"score":<0-100>,"resolution":"<SD/HD/4K/Unknown>","nightVision":"<Yes/No/Unknown>","assessment":"<1 sentence>"},"blindSpots":["<blind spot>"],"vulnerabilities":[{"severity":"<critical|warning|info>","issue":"<title>","detail":"<1-2 sentences>"}],"positives":["<positive>"],"annotations":[{"type":"<critical|warning|info|good>","label":"<max 18 chars>","x":<0-100>,"y":<0-100>,"w":<5-40>,"h":<5-40>}],"recommendations":["<recommendation>"],"summary":"<2-3 sentence professional summary>"}`;
     const data = await fetchWithRetry({max_tokens:2000,content:[
         {type:'image',source:{type:'base64',media_type:getMedia(cam.img),data:cam.img.split(',')[1]}},
@@ -1991,7 +2046,7 @@ Guard Program Details:
 Coverage schedule by zone (this property has distinct zones with potentially different operating hours and risk profiles — evaluate each zone's coverage independently and flag any zone left unguarded during hours it is likely to be occupied or accessible):
 ${zoneDesc}
 
-Evaluate this guard program and respond ONLY with valid JSON (no markdown):
+Evaluate this guard program and respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {"overallScore":<0-100>,"coverage":{"score":<0-100>,"assessment":"<1 sentence>"},"accountability":{"score":<0-100>,"assessment":"<1 sentence>"},"training":{"score":<0-100>,"assessment":"<1 sentence>"},"costEffectiveness":{"score":<0-100>,"assessment":"<1 sentence>"},"findings":[{"severity":"<critical|warning|good>","area":"<area, name the zone if relevant>","title":"<title>","detail":"<2 sentences>"}],"costBenchmark":{"monthlyRate":${data.cost},"marketRangeLow":<number>,"marketRangeHigh":<number>,"assessment":"<1 sentence>","city":"Portland, Oregon"},"recommendations":["<recommendation 1>","<recommendation 2>","<recommendation 3>"],"summary":"<3-4 sentence professional evaluation summary>"}`;
 
   try {
@@ -2195,7 +2250,7 @@ ${zoneDesc}
 
 Note on vehicle gates: a "ticket dispenser — anonymous vehicle entry" and "payment gate — pay-on-exit" are normal, expected configurations for a public pay parking garage and should NOT by themselves be scored as a credential-management failure — anonymous public vehicle entry is standard industry practice. Instead, focus evaluation on whether the PEDESTRIAN transition from that vehicle zone into the rest of the building (e.g. an elevator lobby) is properly credentialed and monitored, since that is the actual security boundary in a public-parking-into-private-building scenario. An "automatic roller door — scheduled nightly closure" is a genuine physical access control measure and should be credited accordingly, while noting any gaps such as lack of confirmed manual override procedures or emergency egress provisions if mentioned in the notes.
 
-Evaluate this access control system and respond ONLY with valid JSON (no markdown):
+Evaluate this access control system and respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {"overallScore":<0-100>,"credentialManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"entryPointSecurity":{"score":<0-100>,"assessment":"<1 sentence>"},"auditability":{"score":<0-100>,"assessment":"<1 sentence>"},"visitorManagement":{"score":<0-100>,"assessment":"<1 sentence>"},"findings":[{"severity":"<critical|warning|good>","area":"<area or system name, be specific>","title":"<title>","detail":"<2 sentences>"}],"recommendations":["<recommendation 1>","<recommendation 2>","<recommendation 3>"],"summary":"<3-4 sentence professional evaluation summary covering all systems present>"}`;
 
   try {
@@ -2517,32 +2572,60 @@ async function buildAssessmentPdf() {
       line(String(val), { size:9, bold:true, color:scoreRGB(val), x:M+220 });
       y += 14;
     }
-    space(8);
-    if (a.findings?.length) {
-      need(14); line('FINDINGS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
-      for (const f of a.findings) {
-        need(50);
-        const sevLbl = (f.severity||'').toUpperCase();
-        line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
-        line(`${f.area||''} \u2014 ${f.title||''}`, { size:11, bold:true, x:M+measure(sevLbl,8,true)+10 });
-        y += 14;
-        text(f.detail||'', { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
-        space(6);
-      }
-    }
-    // Zone photos, tagged by level
-    const zonesWithPhotos = Object.keys(cptedPhotoBytes);
-    if (zonesWithPhotos.length) {
-      newPage();
-      line('CPTED ZONE PHOTOS', { size:8, bold:true, color:PC.inkFaint }); y += 14;
-      for (const zone of zonesWithPhotos) {
+    space(10);
+
+    // Zone-by-zone, photo immediately followed by that zone's own findings --
+    // previously this was a flat findings list (matched to a zone only by a
+    // label string) followed by a completely separate photo gallery later in
+    // the report, which meant flipping back and forth to see what a finding
+    // was even about. Findings are pulled straight from cptedZoneResults (the
+    // raw per-zone AI output, keyed by the same zone key as the photo) rather
+    // than the label-matched summary list, so what's printed under a photo is
+    // guaranteed to be the analysis for that exact photo.
+    const severityRank = { critical: 0, warning: 1, good: 2 };
+    const zoneKeys = Object.keys(cptedImages);
+    if (zoneKeys.length) {
+      need(14); line('ZONE-BY-ZONE FINDINGS', { size:8, bold:true, color:PC.inkFaint }); y += 14;
+      for (const zone of zoneKeys) {
+        const zr = cptedZoneResults[zone];
         const label = (CPTED_LABELS[zone] || zone) + '  \u2014  ' + (cptedImages[zone]?.level || '');
-        need(24);
-        line(label, { size:10, bold:true }); y += 16;
-        embedPhoto(cptedPhotoBytes[zone], 220);
+        need(28);
+        line(label, { size:12, bold:true, x:M });
+        if (zr?.zone_score != null) {
+          const scoreLbl = `${zr.zone_score}/100`;
+          line(scoreLbl, { size:11, bold:true, color:scoreRGB(zr.zone_score), x: PW-M-measure(scoreLbl,11,true) });
+        }
+        y += 18;
+        if (cptedPhotoBytes[zone]) {
+          embedPhoto(cptedPhotoBytes[zone], 220);
+        } else {
+          need(14);
+          line('(photo unavailable in this export)', { size:9, italic:true, color:PC.inkFaint, x:M });
+          y += 14;
+        }
+        space(4);
+        const findings = (zr?.findings || []).slice().sort((x,y2) => (severityRank[x.severity] ?? 3) - (severityRank[y2.severity] ?? 3));
+        if (findings.length) {
+          for (const f of findings) {
+            need(46);
+            const sevLbl = (f.severity||'').toUpperCase();
+            line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
+            line(f.title||'', { size:10.5, bold:true, x:M+measure(sevLbl,8,true)+10 });
+            y += 13;
+            text(f.detail||'', { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
+            space(5);
+          }
+        } else {
+          need(14);
+          text('No specific findings recorded for this zone.', { size:9.5, color:PC.inkFaint, x:M, leading:1.5 });
+          space(5);
+        }
         space(8);
+        drawRule();
+        space(10);
       }
     }
+
     if (a.recommendations?.length) {
       need(14); line('RECOMMENDATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
       a.recommendations.forEach((r,i) => { text(`${i+1}. ${r}`, { size:10, leading:1.5 }); space(3); });
