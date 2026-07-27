@@ -2589,17 +2589,34 @@ async function buildAssessmentPdf() {
       for (const zone of zoneKeys) {
         const zr = cptedZoneResults[zone];
         const label = (CPTED_LABELS[zone] || zone) + '  \u2014  ' + (cptedImages[zone]?.level || '');
-        need(28);
+        const photo = cptedPhotoBytes[zone];
+        // Reserve room for the heading AND its photo as a single combined
+        // check before printing either one. Previously the heading had its
+        // own need(28) and embedPhoto() did its own separate need() for the
+        // image -- if the heading fit but the photo didn't, the heading got
+        // printed at the bottom of one page and the photo (plus everything
+        // after it) jumped alone to the next page, visually separating a
+        // zone's title from its own picture. Computing the photo's height up
+        // front means both move together, or neither does.
+        let neededForHeader = 28;
+        if (photo) {
+          const aspect = photo.h / photo.w;
+          let imgH = CW * aspect;
+          if (imgH > 220) imgH = 220;
+          neededForHeader += imgH + 10;
+        } else {
+          neededForHeader += 14;
+        }
+        need(neededForHeader);
         line(label, { size:12, bold:true, x:M });
         if (zr?.zone_score != null) {
           const scoreLbl = `${zr.zone_score}/100`;
           line(scoreLbl, { size:11, bold:true, color:scoreRGB(zr.zone_score), x: PW-M-measure(scoreLbl,11,true) });
         }
         y += 18;
-        if (cptedPhotoBytes[zone]) {
-          embedPhoto(cptedPhotoBytes[zone], 220);
+        if (photo) {
+          embedPhoto(photo, 220);
         } else {
-          need(14);
           line('(photo unavailable in this export)', { size:9, italic:true, color:PC.inkFaint, x:M });
           y += 14;
         }
