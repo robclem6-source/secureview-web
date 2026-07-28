@@ -2721,6 +2721,106 @@ function pdfDataUrlToJpegBytes(dataUrl) {
   });
 }
 
+// Synthesizes an executive-level "Overall Security Assessment" that reads across
+// whichever of CPTED / CCTV / Guard / Access Control have been completed. Returns
+// null if nothing has been assessed yet (caller skips the section entirely rather
+// than printing an empty one). A deterministic fallback (built first, from the
+// same per-section data the AI prompt receives) is used if the synthesis call
+// fails or returns something unusable -- same pattern as the CPTED zone
+// synthesis fallback, so a flaky AI call never means a missing section.
+const OVERALL_SECTION_LABELS = { cpted: 'CPTED & Environment', cctv: 'CCTV System', guard: 'Guard Services', access: 'Access Control' };
+
+async function synthesizeOverallSummary() {
+  const sections = [];
+  if (resultData.cpted) {
+    sections.push({
+      key: 'cpted', label: OVERALL_SECTION_LABELS.cpted, score: resultData.cpted.overallScore,
+      summary: resultData.cpted.summary || '',
+      findings: (resultData.cpted.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+    });
+  }
+  const analyzedCams = cctvCameras.filter(c => c.analysis);
+  if (analyzedCams.length) {
+    const avgScore = Math.round(analyzedCams.reduce((s, c) => s + (c.analysis.overallScore || 0), 0) / analyzedCams.length);
+    const camFindings = analyzedCams.flatMap(c => (c.analysis.vulnerabilities || []).map(v => ({ severity: v.severity, title: v.issue, detail: v.detail })))
+      .filter(f => f.severity === 'critical' || f.severity === 'warning');
+    sections.push({
+      key: 'cctv', label: OVERALL_SECTION_LABELS.cctv, score: avgScore,
+      summary: `${analyzedCams.length} of ${cctvCameras.length} cameras analyzed, average score ${avgScore}/100.`,
+      findings: camFindings.slice(0, 5),
+    });
+  }
+  if (resultData.guard) {
+    sections.push({
+      key: 'guard', label: OVERALL_SECTION_LABELS.guard, score: resultData.guard.overallScore,
+      summary: resultData.guard.summary || '',
+      findings: (resultData.guard.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+    });
+  }
+  if (resultData.access) {
+    sections.push({
+      key: 'access', label: OVERALL_SECTION_LABELS.access, score: resultData.access.overallScore,
+      summary: resultData.access.summary || '',
+      findings: (resultData.access.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+    });
+  }
+
+  if (!sections.length) return null;
+
+  const missing = ['cpted', 'cctv', 'guard', 'access'].filter(k => !sections.some(s => s.key === k));
+  const allFindings = sections.flatMap(s => s.findings.map(f => ({ ...f, section: s.label })));
+  const severityRank = { critical: 0, warning: 1, good: 2 };
+  allFindings.sort((a, b) => (severityRank[a.severity] ?? 3) - (severityRank[b.severity] ?? 3));
+  const scoresAvail = sections.map(s => s.score).filter(v => v != null);
+  const overallScore = scoresAvail.length ? Math.round(scoresAvail.reduce((a, b) => a + b, 0) / scoresAvail.length) : null;
+
+  const fallbackRecs = [...new Set(sections.flatMap(s => resultData[s.key]?.recommendations || []))].slice(0, 6);
+  const fallbackSummary = `Overall security score of ${overallScore ?? 'N/A'}/100, averaged across ${sections.length} of 4 assessed categories (${sections.map(s => s.label).join(', ')}).`
+    + (missing.length ? ` ${missing.map(k => OVERALL_SECTION_LABELS[k]).join(' and ')} ${missing.length > 1 ? 'were' : 'was'} not assessed at the time this report was generated.` : '')
+    + (allFindings.length ? ` The most significant issues identified were: ${allFindings.slice(0, 3).map(f => f.title).filter(Boolean).join('; ')}.` : '');
+
+  const fallback = {
+    overallScore,
+    summary: fallbackSummary,
+    topRecommendations: fallbackRecs.length ? fallbackRecs : allFindings.slice(0, 5).map(f => f.title).filter(Boolean),
+    criticalIssues: allFindings.filter(f => f.severity === 'critical').slice(0, 5),
+    missing,
+  };
+
+  const compact = sections.map(s => `${s.label} (score ${s.score ?? '?'}/100): ${(s.summary || '').slice(0, 400)}`
+    + (s.findings.length ? ` Key issues: ${s.findings.map(f => f.title).filter(Boolean).join('; ')}` : '')).join('\n\n');
+
+  const prompt = `You are a professional security consultant writing the executive summary of a commercial property security assessment. The assessment covered up to four categories; here is what was completed:
+
+${compact}
+${missing.length ? `\nNot yet assessed: ${missing.map(k => OVERALL_SECTION_LABELS[k]).join(', ')}.` : ''}
+
+Write a concise executive-level synthesis that connects findings ACROSS categories where relevant (e.g. a CCTV blind spot at an access-controlled door, or a guard patrol gap in an area CPTED flagged as poorly lit), rather than just restating each section separately.
+
+Respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
+{"summary":"<4-6 sentence overall narrative synthesizing the property's security posture across all assessed categories, written for a property owner/decision-maker>","topRecommendations":["<the 3-5 highest-priority actions across ALL categories, ranked by impact>"]}`;
+
+  try {
+    const resp = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ max_tokens: 900, content: prompt }) });
+    const d = await resp.json();
+    if (!resp.ok || d.error) throw new Error(d.error || `HTTP ${resp.status}`);
+    const raw = d.content?.find(b => b.type === 'text')?.text || '{}';
+    const parsed = extractJsonLoose(raw);
+    if (!parsed || typeof parsed.summary !== 'string' || !parsed.summary.trim()) throw new Error('Synthesis response missing a usable summary field.');
+    return {
+      overallScore,
+      summary: parsed.summary,
+      topRecommendations: Array.isArray(parsed.topRecommendations) && parsed.topRecommendations.length ? parsed.topRecommendations : fallback.topRecommendations,
+      criticalIssues: fallback.criticalIssues,
+      missing,
+    };
+  } catch (e) {
+    console.warn('Overall summary synthesis failed, using deterministic fallback:', e.message);
+    return fallback;
+  }
+}
+
 async function buildAssessmentPdf() {
   const PW = 612, PH = 792, M = 54, CW = PW - 2 * M;
   const PC = { ink:[20,22,26], inkDim:[90,96,105], inkFaint:[140,146,155], accent:[176,122,0], red:[200,60,55], yellow:[170,120,20], green:[45,130,70], rule:[220,222,228] };
@@ -2871,6 +2971,47 @@ async function buildAssessmentPdf() {
     const w = measure(lbl,11,true);
     line(lbl, { size:11, bold:true, color: val!=null?scoreRGB(val):PC.inkFaint, x: PW-M-w });
     y += 18;
+  }
+
+  // ===== EXECUTIVE SUMMARY (synthesizes CPTED + CCTV + Guard + Access Control) =====
+  const overallSummary = await synthesizeOverallSummary();
+  if (overallSummary) {
+    newPage();
+    line('EXECUTIVE SUMMARY', { size:8, bold:true, color:PC.accent, x:M });
+    y += 14;
+    line('Overall Security Assessment', { size:19, bold:true, x:M });
+    if (overallSummary.overallScore != null) {
+      const lbl = `${overallSummary.overallScore}/100`;
+      const lblW = measure(lbl,16,true);
+      line(lbl, { size:16, bold:true, color:scoreRGB(overallSummary.overallScore), x: PW-M-lblW });
+    }
+    y += 22;
+    drawRule();
+    space(8);
+    if (overallSummary.missing?.length) {
+      const missNames = overallSummary.missing.map(k=>OVERALL_SECTION_LABELS[k]).join(' and ');
+      text(`Note: ${missNames} ${overallSummary.missing.length>1?'were':'was'} not yet assessed when this report was generated — the summary and score below reflect only the completed categories.`, { size:9, italic:true, color:PC.inkFaint, leading:1.5 });
+      space(8);
+    }
+    text(overallSummary.summary || '', { size:11, color:PC.inkDim, leading:1.6 });
+    space(10);
+    if (overallSummary.criticalIssues?.length) {
+      need(14); line('CRITICAL ISSUES ACROSS ALL CATEGORIES', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const f of overallSummary.criticalIssues) {
+        need(40);
+        const sevLbl = (f.severity||'').toUpperCase();
+        line(sevLbl, { size:8, bold:true, color:sevRGB(f.severity), x:M });
+        line(`${f.section ? f.section + '  —  ' : ''}${f.title||''}`, { size:10.5, bold:true, x:M+measure(sevLbl,8,true)+10 });
+        y += 13;
+        if (f.detail) text(f.detail, { size:9.5, color:PC.inkDim, x:M+10, maxWidth:CW-10, leading:1.5 });
+        space(5);
+      }
+      space(4);
+    }
+    if (overallSummary.topRecommendations?.length) {
+      need(14); line('TOP RECOMMENDATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      overallSummary.topRecommendations.forEach((r,i) => { need(20); text(`${i+1}. ${r}`, { size:10.5, leading:1.5 }); space(4); });
+    }
   }
 
   // ===== SECTION I — CPTED =====
