@@ -833,6 +833,11 @@ select.form-input option{background:var(--dark)}
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5" id="projectStatus">Save downloads everything (photos, renames, levels, results) as one file. Load it later to pick up exactly where you left off.</div>
   </div>
   <div class="sb-section">
+    <div class="sb-label">Additional Context</div>
+    <textarea class="form-input" id="execSummaryNotes" placeholder="Optional — notes for the AI to weigh when writing the Executive Summary (e.g. recent incidents, planned upgrades, budget constraints, tenant complaints, prior audit findings)..." style="font-size:10px;padding:6px 9px;min-height:70px;resize:vertical"></textarea>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-top:4px">Only used when generating the Executive Summary — not shown elsewhere in the report.</div>
+  </div>
+  <div class="sb-section">
     <div class="sb-label">Full Assessment</div>
     <button class="btn-primary" id="runFullBtn" onclick="runFullAssessment()" style="width:100%;margin-bottom:6px;font-size:13px;justify-content:center">&#9889; RUN ALL &amp; BUILD REPORT</button>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-bottom:6px" id="runFullStatus">Runs CPTED, CCTV, Guard &amp; Access Control in sequence, then generates one combined PDF.</div>
@@ -2774,10 +2779,16 @@ async function synthesizeOverallSummary() {
   const scoresAvail = sections.map(s => s.score).filter(v => v != null);
   const overallScore = scoresAvail.length ? Math.round(scoresAvail.reduce((a, b) => a + b, 0) / scoresAvail.length) : null;
 
+  const extraNotes = document.getElementById('execSummaryNotes')?.value?.trim() || '';
+
   const fallbackRecs = [...new Set(sections.flatMap(s => resultData[s.key]?.recommendations || []))].slice(0, 6);
   const fallbackSummary = `Overall security score of ${overallScore ?? 'N/A'}/100, averaged across ${sections.length} of 4 assessed categories (${sections.map(s => s.label).join(', ')}).`
     + (missing.length ? ` ${missing.map(k => OVERALL_SECTION_LABELS[k]).join(' and ')} ${missing.length > 1 ? 'were' : 'was'} not assessed at the time this report was generated.` : '')
-    + (allFindings.length ? ` The most significant issues identified were: ${allFindings.slice(0, 3).map(f => f.title).filter(Boolean).join('; ')}.` : '');
+    + (allFindings.length ? ` The most significant issues identified were: ${allFindings.slice(0, 3).map(f => f.title).filter(Boolean).join('; ')}.` : '')
+    // The AI-written synthesis below is what actually reasons about this context; the
+    // fallback can't do that, so if it has to be used, at least surface the assessor's
+    // notes verbatim rather than silently dropping them.
+    + (extraNotes ? ` Assessor-provided context: ${extraNotes}` : '');
 
   const fallback = {
     overallScore,
@@ -2794,6 +2805,7 @@ async function synthesizeOverallSummary() {
 
 ${compact}
 ${missing.length ? `\nNot yet assessed: ${missing.map(k => OVERALL_SECTION_LABELS[k]).join(', ')}.` : ''}
+${extraNotes ? `\nAdditional context provided by the assessor (weigh this alongside the category findings above -- it may explain, prioritize, or add nuance to what was found, but should not replace the findings themselves):\n${extraNotes}` : ''}
 
 Write a concise executive-level synthesis that connects findings ACROSS categories where relevant (e.g. a CCTV blind spot at an access-controlled door, or a guard patrol gap in an area CPTED flagged as poorly lit), rather than just restating each section separately.
 
@@ -3331,6 +3343,7 @@ function collectProjectState() {
   return {
     savedAt: new Date().toISOString(),
     propertyName: document.getElementById('propNameInput')?.value || '',
+    execSummaryNotes: document.getElementById('execSummaryNotes')?.value || '',
     propertyLevels,
     cptedLabels: CPTED_LABELS,
     dynamicCptedCount,
@@ -3414,6 +3427,7 @@ function restoreProjectState(state) {
   // --- Property + levels ---
   const propInput = document.getElementById('propNameInput');
   if (propInput) { propInput.value = state.propertyName || ''; document.getElementById('propDisplay').textContent = state.propertyName || 'COMMERCIAL PROPERTY ASSESSMENT'; }
+  const execNotesEl = document.getElementById('execSummaryNotes'); if (execNotesEl) execNotesEl.value = state.execSummaryNotes || '';
   propertyLevels = state.propertyLevels && state.propertyLevels.length ? state.propertyLevels : ['Level 1','Level 2'];
   renderLevelsConfig();
 
