@@ -597,37 +597,34 @@ select.form-input option{background:var(--dark)}
       </div>
       <div class="form-group"><label class="form-label">Guards On-Site (per shift)</label><input class="form-input" id="g-count" type="number" value="2"></div>
       <div class="form-group"><label class="form-label">Monthly Cost ($)</label><input class="form-input" id="g-cost" type="number" value="7800"></div>
-      <div class="form-group"><label class="form-label">Patrol Type</label>
-        <select class="form-input" id="g-patrol">
-          <option value="static">Static Post (fixed position)</option>
-          <option value="roving" selected>Roving Patrol</option>
-          <option value="both">Both Static + Roving</option>
-          <option value="virtual">Virtual / Remote Guard</option>
-        </select>
-      </div>
-      <div class="form-group"><label class="form-label">Patrol Frequency</label>
-        <select class="form-input" id="g-freq">
-          <option value="continuous">Continuous</option>
-          <option value="30min" selected>Every 30 minutes</option>
-          <option value="60min">Every 60 minutes</option>
-          <option value="2hr">Every 2 hours</option>
-          <option value="adhoc">Ad hoc / As needed</option>
-        </select>
+      <div class="form-group full"><label class="form-label">Guard Service Type</label>
+        <div class="check-group">
+          <label class="check-item"><input type="checkbox" id="g-svc-onsite" checked onchange="updateGuardServiceVisibility()"> Onsite Guards</label>
+          <label class="check-item"><input type="checkbox" id="g-svc-roving" checked onchange="updateGuardServiceVisibility()"> Roving Patrol</label>
+        </div>
       </div>
       <div class="form-group"><label class="form-label">Contract Renewal Date</label><input class="form-input" id="g-renewal" type="text" placeholder="e.g. 3 months"></div>
       <div class="form-group"><label class="form-label">Hourly Bill Rate ($ per hour)</label><input class="form-input" id="g-rate" type="number" placeholder="e.g. 28"></div>
     </div>
   </div>
 
-  <div class="panel">
+  <div class="panel" id="guardOnsitePanel">
     <div class="section-row">
       <div>
         <div class="panel-title">&#128197; COVERAGE SCHEDULE BY ZONE</div>
-        <div class="panel-sub">ENTER SHIFT TIMES PER ZONE — RETAIL, PARKING, AND OFFICE AREAS OFTEN RUN DIFFERENT HOURS. GAPS WILL BE FLAGGED AS VULNERABILITIES</div>
+        <div class="panel-sub">SELECT SHIFT START/STOP TIMES PER ZONE — RETAIL, PARKING, AND OFFICE AREAS OFTEN RUN DIFFERENT HOURS. GAPS WILL BE FLAGGED AS VULNERABILITIES</div>
       </div>
     </div>
     <div id="guardZonesWrap"></div>
     <button class="add-slot-btn" onclick="addGuardZone()">+ ADD ZONE SCHEDULE</button>
+  </div>
+
+  <div class="panel" id="guardRovingPanel">
+    <div class="panel-title">&#128694; ROVING PATROL DETAILS</div>
+    <div class="panel-sub">HOW OFTEN GUARDS ARE REQUIRED TO WALK OR DRIVE THE FULL SITE</div>
+    <div class="form-grid">
+      <div class="form-group"><label class="form-label">Patrols per 24-Hour Period</label><input class="form-input" id="g-patrol-count" type="number" min="0" step="1" value="48" placeholder="e.g. 48"></div>
+    </div>
   </div>
 
   <div class="panel">
@@ -2225,6 +2222,41 @@ document.getElementById('camModal').addEventListener('click',e=>{if(e.target===d
 let guardZones = [];
 let nextGuardZoneId = 0;
 
+// Half-hour shift-time presets for the onsite guard schedule dropdowns. Formatted
+// to match the plain strings this field already stored (e.g. "6:00 AM"), so
+// existing/default data still pre-selects correctly against this list.
+const GUARD_TIME_OPTIONS = (() => {
+  const opts = ['None', '\u2014'];
+  for (let h = 0; h < 24; h++) {
+    for (const m of [0, 30]) {
+      const hour12 = h % 12 === 0 ? 12 : h % 12;
+      const ampm = h < 12 ? 'AM' : 'PM';
+      opts.push(`${hour12}:${m === 0 ? '00' : '30'} ${ampm}`);
+    }
+  }
+  return opts;
+})();
+
+function guardTimeSelectHtml(id, field, current) {
+  // If a previously-saved value isn't one of the presets (e.g. an old free-typed
+  // entry), keep it selectable as a first "custom" option instead of silently
+  // discarding it.
+  const opts = GUARD_TIME_OPTIONS.includes(current) ? GUARD_TIME_OPTIONS : [current, ...GUARD_TIME_OPTIONS];
+  return `<select class="form-input" onchange="updateGuardZoneField(${id},'${field}',this.value)">${opts.map(t=>`<option value="${escAttr(t)}" ${t===current?'selected':''}>${escAttr(t)}</option>`).join('')}</select>`;
+}
+
+// Shows/hides the onsite-schedule and roving-patrol sub-panels based on the two
+// Guard Service Type checkboxes. Both can be checked at once (a site can have a
+// fixed guard post and a separate roving patrol running concurrently).
+function updateGuardServiceVisibility() {
+  const onsite = document.getElementById('g-svc-onsite')?.checked;
+  const roving = document.getElementById('g-svc-roving')?.checked;
+  const onsitePanel = document.getElementById('guardOnsitePanel');
+  const rovingPanel = document.getElementById('guardRovingPanel');
+  if (onsitePanel) onsitePanel.classList.toggle('hidden', !onsite);
+  if (rovingPanel) rovingPanel.classList.toggle('hidden', !roving);
+}
+
 function newGuardZone(name, opts) {
   opts = opts || {};
   return {
@@ -2269,13 +2301,13 @@ function renderGuardZones() {
       <div class="schedule-grid">
         <div class="sched-card">
           <div class="sched-title">Weekday Coverage</div>
-          <div class="sched-row"><span class="form-label sched-lbl">Day</span><input class="form-input" value="${escAttr(z.dayStart)}" oninput="updateGuardZoneField(${z.id},'dayStart',this.value)"><input class="form-input" value="${escAttr(z.dayEnd)}" oninput="updateGuardZoneField(${z.id},'dayEnd',this.value)"></div>
-          <div class="sched-row"><span class="form-label sched-lbl">Night</span><input class="form-input" value="${escAttr(z.nightStart)}" oninput="updateGuardZoneField(${z.id},'nightStart',this.value)"><input class="form-input" value="${escAttr(z.nightEnd)}" oninput="updateGuardZoneField(${z.id},'nightEnd',this.value)"></div>
+          <div class="sched-row"><span class="form-label sched-lbl">Day</span>${guardTimeSelectHtml(z.id,'dayStart',z.dayStart)}${guardTimeSelectHtml(z.id,'dayEnd',z.dayEnd)}</div>
+          <div class="sched-row"><span class="form-label sched-lbl">Night</span>${guardTimeSelectHtml(z.id,'nightStart',z.nightStart)}${guardTimeSelectHtml(z.id,'nightEnd',z.nightEnd)}</div>
         </div>
         <div class="sched-card">
           <div class="sched-title">Weekend Coverage</div>
-          <div class="sched-row"><span class="form-label sched-lbl">Sat</span><input class="form-input" value="${escAttr(z.satStart)}" oninput="updateGuardZoneField(${z.id},'satStart',this.value)"><input class="form-input" value="${escAttr(z.satEnd)}" oninput="updateGuardZoneField(${z.id},'satEnd',this.value)"></div>
-          <div class="sched-row"><span class="form-label sched-lbl">Sun</span><input class="form-input" value="${escAttr(z.sunStart)}" oninput="updateGuardZoneField(${z.id},'sunStart',this.value)"><input class="form-input" value="${escAttr(z.sunEnd)}" oninput="updateGuardZoneField(${z.id},'sunEnd',this.value)"></div>
+          <div class="sched-row"><span class="form-label sched-lbl">Sat</span>${guardTimeSelectHtml(z.id,'satStart',z.satStart)}${guardTimeSelectHtml(z.id,'satEnd',z.satEnd)}</div>
+          <div class="sched-row"><span class="form-label sched-lbl">Sun</span>${guardTimeSelectHtml(z.id,'sunStart',z.sunStart)}${guardTimeSelectHtml(z.id,'sunEnd',z.sunEnd)}</div>
         </div>
         <div class="sched-card">
           <div class="sched-title">Zone Summary</div>
@@ -2294,8 +2326,9 @@ async function analyzeGuard() {
     contract: document.getElementById('g-contract').value,
     count: document.getElementById('g-count').value,
     cost: document.getElementById('g-cost').value,
-    patrol: document.getElementById('g-patrol').value,
-    freq: document.getElementById('g-freq').value,
+    svcOnsite: document.getElementById('g-svc-onsite').checked,
+    svcRoving: document.getElementById('g-svc-roving').checked,
+    patrolCount: document.getElementById('g-patrol-count').value,
     renewal: document.getElementById('g-renewal').value,
     rate: document.getElementById('g-rate').value,
     armed: document.getElementById('g-armed').value,
@@ -2318,7 +2351,7 @@ async function analyzeGuard() {
 Guard Program Details:
 - Provider: ${data.company} (${data.contract})
 - Guards: ${data.count} on-site, $${data.cost}/month
-- Patrol: ${data.patrol}, frequency: ${data.freq}
+- Guard Service Type: ${[data.svcOnsite ? 'Onsite Guards (see zone schedule below)' : null, data.svcRoving ? `Roving Patrol (${data.patrolCount} rounds per 24-hour period, walking or vehicle)` : null].filter(Boolean).join(' + ') || 'Not specified'}
 - Armed: ${data.armed}
 - Incident Reporting: ${data.reporting}
 - Tour Verification: ${data.tour}
@@ -2603,7 +2636,7 @@ function updateSidebarScores() {
 const CHAT_CONTEXT = {
   1: () => `You are SecureView AI advising on CPTED (Crime Prevention Through Environmental Design) for a commercial property with levels: ${propertyLevels.join(', ')}. CPTED score: ${scores.cpted||'not yet assessed'}. Focus on environmental design, lighting, natural surveillance, and landscaping — including vertical circulation and level transitions if the property has multiple levels. Be specific and practical. Under 120 words.`,
   2: () => `You are SecureView AI advising on CCTV systems for a commercial property with levels: ${propertyLevels.join(', ')}. CCTV score: ${scores.cctv||'not yet assessed'}. Analyzed cameras: ${cctvCameras.filter(c=>c.analysis).map(c=>`${c.name} [${c.level}] (score: ${c.analysis?.overallScore})`).join(', ')||'none yet'}. Focus on camera placement, coverage gaps, and recording systems. Under 120 words.`,
-  3: () => `You are SecureView AI advising on guard services for a commercial property in Portland, Oregon with zones: ${guardZones.map(z=>z.name).join(', ')}. Guard program score: ${scores.guard||'not yet assessed'}. Provider: ${document.getElementById('g-company')?.value||'unknown'}, monthly cost: $${document.getElementById('g-cost')?.value||'unknown'}, patrol type: ${document.getElementById('g-patrol')?.value||'unknown'}. Focus on contract terms, accountability, and program quality, including any zone-specific coverage gaps. Reference Oregon market rates where relevant. Under 120 words.`,
+  3: () => `You are SecureView AI advising on guard services for a commercial property in Portland, Oregon with zones: ${guardZones.map(z=>z.name).join(', ')}. Guard program score: ${scores.guard||'not yet assessed'}. Provider: ${document.getElementById('g-company')?.value||'unknown'}, monthly cost: $${document.getElementById('g-cost')?.value||'unknown'}, guard type: ${[document.getElementById('g-svc-onsite')?.checked?'onsite':null, document.getElementById('g-svc-roving')?.checked?`roving (${document.getElementById('g-patrol-count')?.value||'?'}/24hr)`:null].filter(Boolean).join(' + ')||'unspecified'}. Focus on contract terms, accountability, and program quality, including any zone-specific coverage gaps. Reference Oregon market rates where relevant. Under 120 words.`,
   4: () => `You are SecureView AI advising on access control for a commercial property with zones: ${acZones.map(z=>z.name).join(', ')}. Access control score: ${scores.access||'not yet assessed'}. System types present: ${[...selectedAcTypes].map(t=>AC_TYPE_META[t]?.label||t).join(', ')||'none selected'}, last audit: ${document.getElementById('ac-audit')?.value||'unknown'}, offboarding: ${document.getElementById('ac-offboard')?.value||'unknown'}. Focus on credential management, door security, and zone-to-zone transition risks. Under 120 words.`
 };
 
@@ -3169,8 +3202,9 @@ function collectProjectState() {
       contract: document.getElementById('g-contract')?.value,
       count: document.getElementById('g-count')?.value,
       cost: document.getElementById('g-cost')?.value,
-      patrol: document.getElementById('g-patrol')?.value,
-      freq: document.getElementById('g-freq')?.value,
+      svcOnsite: document.getElementById('g-svc-onsite')?.checked,
+      svcRoving: document.getElementById('g-svc-roving')?.checked,
+      patrolCount: document.getElementById('g-patrol-count')?.value,
       renewal: document.getElementById('g-renewal')?.value,
       rate: document.getElementById('g-rate')?.value,
       armed: document.getElementById('g-armed')?.value,
@@ -3295,7 +3329,10 @@ function restoreProjectState(state) {
   const setVal = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.value = v; };
   const setChecked = (id, v) => { const el = document.getElementById(id); if (el && v !== undefined) el.checked = v; };
   setVal('g-company', gf.company); setVal('g-contract', gf.contract); setVal('g-count', gf.count);
-  setVal('g-cost', gf.cost); setVal('g-patrol', gf.patrol); setVal('g-freq', gf.freq);
+  setVal('g-cost', gf.cost);
+  setChecked('g-svc-onsite', gf.svcOnsite !== undefined ? gf.svcOnsite : true);
+  setChecked('g-svc-roving', gf.svcRoving !== undefined ? gf.svcRoving : true);
+  setVal('g-patrol-count', gf.patrolCount);
   setVal('g-renewal', gf.renewal); setVal('g-rate', gf.rate); setVal('g-armed', gf.armed);
   setVal('g-reporting', gf.reporting); setVal('g-tour', gf.tour); setVal('g-video', gf.video);
   setChecked('g-firstaid', gf.firstaid); setChecked('g-shooter', gf.shooter);
@@ -3304,6 +3341,7 @@ function restoreProjectState(state) {
   guardZones = state.guardZones && state.guardZones.length ? state.guardZones : guardZones;
   nextGuardZoneId = state.nextGuardZoneId || nextGuardZoneId;
   renderGuardZones();
+  updateGuardServiceVisibility();
 
   // --- Access Control ---
   selectedAcTypes = new Set(state.selectedAcTypes && state.selectedAcTypes.length ? state.selectedAcTypes : ['keyfob']);
@@ -3411,6 +3449,7 @@ renderLevelsConfig();
 initCctvCameras();
 renderMapLevelTabs();
 initGuardZones();
+updateGuardServiceVisibility();
 initAcZones();
 renderAcSystemDetails();
 updateCptedCount();
