@@ -146,6 +146,36 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .stat-lbl{color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:9px}
 .stat-val{color:var(--white);font-weight:600}
 
+/* ── COVERAGE MAP: schematic/floor-plan toggle + floor plan pin editor ── */
+.map-view-toggle{display:flex;gap:4px;border:1px solid var(--border);border-radius:3px;overflow:hidden}
+.mvt-btn{background:var(--panel);border:none;color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;padding:5px 10px;cursor:pointer;transition:all .15s}
+.mvt-btn:hover{color:var(--text)}
+.mvt-btn.active{background:rgba(240,165,0,.15);color:var(--accent)}
+.mvt-btn:disabled{opacity:.35;cursor:not-allowed}
+.fp-upload-prompt{padding:2.2rem 1rem;text-align:center;border:1.5px dashed var(--border);border-radius:6px;margin:1.2rem;width:calc(100% - 2.4rem)}
+.fp-upload-prompt input[type=file]{display:none}
+.fp-body{display:flex;gap:1.2rem;padding:1.2rem;align-items:flex-start}
+.fp-canvas-wrap{position:relative;flex:1;min-width:0;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#0a0c10;cursor:default}
+.fp-canvas-wrap.placing{cursor:crosshair}
+.fp-canvas-wrap img{display:block;width:100%;height:auto;user-select:none;pointer-events:none}
+.fp-pins-layer{position:absolute;inset:0}
+.fp-pin{position:absolute;transform:translate(-50%,-50%);touch-action:none}
+.fp-pin-cone{position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;transform-origin:0 0}
+.fp-pin-dot{position:absolute;left:0;top:0;transform:translate(-50%,-50%);width:22px;height:22px;border-radius:50%;background:var(--accent);border:2px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,.4);cursor:grab;display:flex;align-items:center;justify-content:center;font-family:'IBM Plex Mono',monospace;font-size:8px;font-weight:700;color:#000;z-index:2}
+.fp-pin-dot:active{cursor:grabbing}
+.fp-pin-handle{position:absolute;width:12px;height:12px;border-radius:50%;background:#fff;border:2px solid var(--accent);cursor:grab;z-index:3}
+.fp-pin-handle:active{cursor:grabbing}
+.fp-pin-remove{position:absolute;left:14px;top:-14px;width:16px;height:16px;border-radius:50%;background:var(--red);border:1px solid #fff;color:#fff;font-size:10px;line-height:1;cursor:pointer;z-index:4;display:flex;align-items:center;justify-content:center}
+.fp-sidebar{width:220px;flex-shrink:0}
+.fp-sidebar-title{font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+.fp-cam-row{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;font-size:10px}
+.fp-cam-row.unplaced{border-color:rgba(240,165,0,.4)}
+.fp-place-btn{background:transparent;border:1px solid var(--accent);color:var(--accent);font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.5px;padding:3px 7px;border-radius:2px;cursor:pointer}
+.fp-place-btn.active{background:var(--accent);color:#000}
+.fp-placing-banner{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--accent);letter-spacing:.5px;margin-bottom:10px;padding:6px 8px;border:1px solid var(--accent);border-radius:3px;background:rgba(240,165,0,.08)}
+.fp-replace-btn{background:transparent;border:1px solid var(--border);color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.5px;padding:5px 9px;border-radius:3px;cursor:pointer;width:100%;margin-top:12px}
+.fp-replace-btn:hover{border-color:var(--accent);color:var(--accent)}
+
 /* ── FORMS (Guarding + Access Control) ── */
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:.9rem}
 .form-group{margin-bottom:0}
@@ -468,9 +498,15 @@ select.form-input option{background:var(--dark)}
     <div class="map-head">
       <span class="map-head-title">&#128208; COVERAGE MAP</span>
       <div class="map-level-tabs" id="mapLevelTabs"></div>
-      <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted);letter-spacing:1px">AI-GENERATED BASED ON CAMERA ANALYSIS</span>
+      <div class="map-view-toggle" id="mapViewToggle">
+        <button class="mvt-btn active" data-view="schematic" onclick="setMapView('schematic')">SCHEMATIC</button>
+        <button class="mvt-btn" data-view="floorplan" onclick="setMapView('floorplan')">FLOOR PLAN</button>
+      </div>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted);letter-spacing:1px" id="mapModeCaption">AI-GENERATED BASED ON CAMERA ANALYSIS</span>
     </div>
-    <div class="map-body">
+
+    <!-- Schematic (AI-estimated perimeter) view -->
+    <div class="map-body" id="mapBodySchematic">
       <canvas id="coverageCanvas" width="380" height="250"></canvas>
       <div class="map-legend">
         <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:8px">LEGEND</div>
@@ -485,6 +521,32 @@ select.form-input option{background:var(--dark)}
           <div class="stat-row"><span class="stat-lbl">RESOLUTION</span><span class="stat-val" id="statRes">—</span></div>
           <div class="stat-row"><span class="stat-lbl">NIGHT VISION</span><span class="stat-val" id="statNight">—</span></div>
         </div>
+      </div>
+    </div>
+
+    <!-- Floor plan view: upload prompt (no plan yet for this level) -->
+    <div class="hidden" id="mapBodyFloorplanEmpty">
+      <div class="fp-upload-prompt">
+        <div style="font-size:24px;margin-bottom:8px">&#128204;</div>
+        <div style="font-size:12px;color:var(--white);font-weight:600;margin-bottom:4px" id="fpEmptyTitle">No floor plan uploaded for this level yet</div>
+        <div style="font-size:10px;color:var(--muted);margin-bottom:14px">Upload a floor plan image to pin cameras at their real location and aim direction.</div>
+        <button class="add-slot-btn" onclick="triggerFloorPlanUpload()">+ UPLOAD FLOOR PLAN</button>
+        <input type="file" accept="image/*" id="floorPlanFileInput" onchange="handleFloorPlanUpload(this)">
+      </div>
+    </div>
+
+    <!-- Floor plan view: interactive stage (plan exists for this level) -->
+    <div class="fp-body hidden" id="mapBodyFloorplanStage">
+      <div class="fp-canvas-wrap" id="fpCanvasWrap" onclick="handleFloorPlanClick(event)">
+        <img id="fpImage" src="" alt="Floor plan">
+        <div class="fp-pins-layer" id="fpPinsLayer"></div>
+      </div>
+      <div class="fp-sidebar">
+        <div id="fpPlacingBanner"></div>
+        <div class="fp-sidebar-title">Cameras on this level</div>
+        <div id="fpCameraList"></div>
+        <input type="file" accept="image/*" id="floorPlanReplaceInput" onchange="handleFloorPlanUpload(this)">
+        <button class="fp-replace-btn" onclick="triggerFloorPlanUpload(true)">Replace floor plan</button>
       </div>
     </div>
   </div>
@@ -813,6 +875,14 @@ let cptedImages = {}; // zone -> {data, level}
 let cctvCameras = [];
 let nextCctvId = 0;
 
+// Floor plans — one optional uploaded image per property level, used as an
+// alternative to the abstract schematic coverage map. Cameras get pinned
+// directly onto the real layout instead of an auto-generated perimeter.
+let floorPlans = {}; // level -> {data}
+let activeMapView = 'schematic'; // 'schematic' | 'floorplan'
+let placingCameraId = null; // camera id currently waiting for a click-to-place on the floor plan
+let draggingPin = null; // {camId, mode:'move'|'rotate'}
+
 const API = "/api/analyze";
 const MODEL = "claude-sonnet-5"; // kept for reference; the model is now set server-side in /api/analyze
 
@@ -972,7 +1042,15 @@ function removeLevel(i) {
   propertyLevels.splice(i,1);
   // Reassign anything tagged with the removed level to the first remaining level
   Object.keys(cptedImages).forEach(z => { if(cptedImages[z].level===removed) cptedImages[z].level = propertyLevels[0]; });
-  cctvCameras.forEach(c => { if(c.level===removed) c.level = propertyLevels[0]; });
+  cctvCameras.forEach(c => {
+    if(c.level===removed) {
+      c.level = propertyLevels[0];
+      // Pin position was relative to the removed level's floor plan — it no longer means anything.
+      c.mapX = null; c.mapY = null; c.mapAngle = 0;
+    }
+  });
+  delete floorPlans[removed];
+  if (activeMapLevel === removed) activeMapLevel = 'ALL';
   renderLevelsConfig();
   renderMapLevelTabs();
   drawMap();
@@ -982,8 +1060,11 @@ function renameLevel(i, val) {
   propertyLevels[i] = val;
   Object.keys(cptedImages).forEach(z => { if(cptedImages[z].level===old) cptedImages[z].level = val; });
   cctvCameras.forEach(c => { if(c.level===old) c.level = val; });
+  if (floorPlans[old]) { floorPlans[val] = floorPlans[old]; delete floorPlans[old]; }
+  if (activeMapLevel === old) activeMapLevel = val;
   refreshAllLevelSelects();
   renderMapLevelTabs();
+  drawMap();
 }
 
 function refreshAllLevelSelects() {
@@ -1545,7 +1626,8 @@ function renderCptedResults(a) {
 // PAGE 2 — CCTV
 // ═══════════════════════════════════════════
 function newCctvCard(id, name, zone, level) {
-  return {id, name, zone, level: level || propertyLevels[0], img:null, analysis:null, analysisFailed:false};
+  return {id, name, zone, level: level || propertyLevels[0], img:null, analysis:null, analysisFailed:false,
+    mapX:null, mapY:null, mapAngle:0}; // floor-plan pin position (% of image) and aim direction (deg, 0=up, clockwise)
 }
 
 function renderCctvCard(cam) {
@@ -1863,7 +1945,7 @@ function setMapLevel(lv) {
   drawMap();
 }
 
-function drawMap() {
+function drawSchematicMap() {
   const canvas=document.getElementById('coverageCanvas');
   const ctx=canvas.getContext('2d'); const W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
@@ -1905,6 +1987,207 @@ function drawMap() {
 
   const analyzed=cctvCameras.filter(c=>c.analysis && (activeMapLevel==='ALL' || c.level===activeMapLevel));
   updateMapStats(analyzed, camsToShow.length);
+}
+
+// ── Master render entry point for the coverage map card. Decides whether the
+// schematic (AI-estimated perimeter) or the floor-plan pin editor is shown,
+// and keeps both in sync with the current level/view selection. Every
+// existing call site that used to call drawMap() directly now gets floor-plan
+// updates for free by going through here. ──
+function drawMap() {
+  renderMapViewToggle();
+  const bodySchematic = document.getElementById('mapBodySchematic');
+  const bodyEmpty = document.getElementById('mapBodyFloorplanEmpty');
+  const bodyStage = document.getElementById('mapBodyFloorplanStage');
+  const caption = document.getElementById('mapModeCaption');
+  const showFloorplan = activeMapView === 'floorplan' && activeMapLevel !== 'ALL';
+  if (!showFloorplan) {
+    if (bodySchematic) bodySchematic.classList.remove('hidden');
+    if (bodyEmpty) bodyEmpty.classList.add('hidden');
+    if (bodyStage) bodyStage.classList.add('hidden');
+    if (caption) caption.textContent = 'AI-GENERATED BASED ON CAMERA ANALYSIS';
+    drawSchematicMap();
+    return;
+  }
+  if (bodySchematic) bodySchematic.classList.add('hidden');
+  const plan = floorPlans[activeMapLevel];
+  if (!plan) {
+    if (bodyEmpty) bodyEmpty.classList.remove('hidden');
+    if (bodyStage) bodyStage.classList.add('hidden');
+    const title = document.getElementById('fpEmptyTitle');
+    if (title) title.textContent = `No floor plan uploaded for ${activeMapLevel} yet`;
+    if (caption) caption.textContent = 'UPLOAD A FLOOR PLAN TO PIN CAMERAS';
+    // Keep stats/analysis-derived numbers current even while the floor-plan stage is shown.
+    const analyzed = cctvCameras.filter(c => c.analysis && c.level === activeMapLevel);
+    updateMapStats(analyzed, cctvCameras.filter(c => c.level === activeMapLevel).length);
+    return;
+  }
+  if (bodyEmpty) bodyEmpty.classList.add('hidden');
+  if (bodyStage) bodyStage.classList.remove('hidden');
+  const img = document.getElementById('fpImage');
+  if (img && img.src !== plan.data) img.src = plan.data;
+  if (caption) caption.textContent = 'DRAG PINS TO POSITION \u2014 DRAG HANDLE TO AIM';
+  renderFloorPlanPins();
+  renderFloorPlanCameraList();
+  renderPlacingBanner();
+  const analyzed = cctvCameras.filter(c => c.analysis && c.level === activeMapLevel);
+  updateMapStats(analyzed, cctvCameras.filter(c => c.level === activeMapLevel).length);
+}
+
+function renderMapViewToggle() {
+  const toggle = document.getElementById('mapViewToggle'); if (!toggle) return;
+  const isAll = activeMapLevel === 'ALL';
+  if (isAll && activeMapView === 'floorplan') activeMapView = 'schematic';
+  toggle.querySelectorAll('.mvt-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === activeMapView);
+    btn.disabled = (btn.dataset.view === 'floorplan' && isAll);
+  });
+}
+
+function setMapView(view) {
+  if (view === 'floorplan' && activeMapLevel === 'ALL') return; // per-level only
+  activeMapView = view;
+  drawMap();
+}
+
+function triggerFloorPlanUpload(replace) {
+  const input = document.getElementById(replace ? 'floorPlanReplaceInput' : 'floorPlanFileInput');
+  if (input) input.click();
+}
+
+function handleFloorPlanUpload(input) {
+  const file = input.files[0]; if (!file) return;
+  const level = activeMapLevel;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const result = await compressImageDataUrl(e.target.result, 1600, 0.85, file);
+    if (result.error) {
+      alert(`This floor plan could not be used: ${result.error}`);
+      input.value = '';
+      return;
+    }
+    floorPlans[level] = { data: result.dataUrl };
+    input.value = '';
+    drawMap();
+  };
+  reader.readAsDataURL(file);
+}
+
+function beginPlaceCamera(id) {
+  placingCameraId = (placingCameraId === id) ? null : id;
+  const wrap = document.getElementById('fpCanvasWrap');
+  if (wrap) wrap.classList.toggle('placing', placingCameraId != null);
+  renderFloorPlanCameraList();
+  renderPlacingBanner();
+}
+
+function renderPlacingBanner() {
+  const el = document.getElementById('fpPlacingBanner'); if (!el) return;
+  if (placingCameraId == null) { el.innerHTML = ''; return; }
+  const cam = cctvCameras.find(c => c.id === placingCameraId);
+  el.innerHTML = `<div class="fp-placing-banner">Click on the floor plan to place ${escAttr(cam ? cam.name : 'camera')}</div>`;
+}
+
+function handleFloorPlanClick(e) {
+  if (placingCameraId == null) return;
+  if (e.target.closest('.fp-pin')) return;
+  const wrap = document.getElementById('fpCanvasWrap'); if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+  const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+  const cam = cctvCameras.find(c => c.id === placingCameraId);
+  if (cam) {
+    cam.mapX = Math.max(0, Math.min(100, xPct));
+    cam.mapY = Math.max(0, Math.min(100, yPct));
+    if (cam.mapAngle == null) cam.mapAngle = 0;
+  }
+  placingCameraId = null;
+  if (wrap) wrap.classList.remove('placing');
+  drawMap();
+}
+
+function unplaceCamera(id) {
+  const cam = cctvCameras.find(c => c.id === id);
+  if (cam) { cam.mapX = null; cam.mapY = null; cam.mapAngle = 0; }
+  drawMap();
+}
+
+function renderFloorPlanCameraList() {
+  const list = document.getElementById('fpCameraList'); if (!list) return;
+  const cams = cctvCameras.filter(c => c.level === activeMapLevel);
+  if (!cams.length) {
+    list.innerHTML = `<div style="font-size:10px;color:var(--muted)">No cameras added to this level yet.</div>`;
+    return;
+  }
+  list.innerHTML = cams.map(c => {
+    const placed = c.mapX != null && c.mapY != null;
+    const isPlacing = placingCameraId === c.id;
+    return `<div class="fp-cam-row ${placed ? '' : 'unplaced'}">
+      <span>${escAttr(c.name)}</span>
+      <button class="fp-place-btn ${isPlacing ? 'active' : ''}" onclick="beginPlaceCamera(${c.id})">${isPlacing ? 'CLICK MAP\u2026' : (placed ? 'MOVE' : 'PLACE')}</button>
+    </div>`;
+  }).join('');
+}
+
+// angle: 0 = up/north, increases clockwise (matches how mapAngle is stored and how
+// the drag-to-rotate handler below computes it), r = distance in px from the pin center.
+function angleToXY(angleDeg, r) {
+  const rad = angleDeg * Math.PI / 180;
+  return { x: r * Math.sin(rad), y: -r * Math.cos(rad) };
+}
+
+function renderFloorPlanPins() {
+  const layer = document.getElementById('fpPinsLayer'); if (!layer) return;
+  const cams = cctvCameras.filter(c => c.level === activeMapLevel && c.mapX != null && c.mapY != null);
+  layer.innerHTML = cams.map(c => {
+    const fov = c.analysis?.coverage?.fovDegrees || 90;
+    const R = 70, halfW = R * Math.tan((fov / 2) * Math.PI / 180);
+    const angle = c.mapAngle || 0;
+    const hp = angleToXY(angle, R + 16);
+    const camLabel = c.name.match(/CAM-?0*(\d+)/i);
+    const shortLabel = camLabel ? camLabel[1] : (c.id + 1);
+    return `<div class="fp-pin" style="left:${c.mapX}%;top:${c.mapY}%" data-cam-id="${c.id}">
+      <div class="fp-pin-cone" style="border-left:${halfW}px solid transparent;border-right:${halfW}px solid transparent;border-bottom:${R}px solid rgba(88,166,255,.3);transform:rotate(${angle + 180}deg)"></div>
+      <div class="fp-pin-dot" data-drag="move" data-cam-id="${c.id}" title="${escAttr(c.name)} \u2014 drag to reposition">C${shortLabel}</div>
+      <div class="fp-pin-handle" data-drag="rotate" data-cam-id="${c.id}" style="left:${hp.x}px;top:${hp.y}px;transform:translate(-50%,-50%)" title="Drag to set aim direction"></div>
+      <div class="fp-pin-remove" onclick="unplaceCamera(${c.id})" title="Remove pin">&times;</div>
+    </div>`;
+  }).join('');
+  layer.querySelectorAll('[data-drag]').forEach(el => el.addEventListener('pointerdown', startPinDrag));
+}
+
+function startPinDrag(e) {
+  e.preventDefault(); e.stopPropagation();
+  draggingPin = { camId: Number(e.currentTarget.dataset.camId), mode: e.currentTarget.dataset.drag };
+  document.addEventListener('pointermove', handlePinDragMove);
+  document.addEventListener('pointerup', endPinDrag);
+}
+
+function handlePinDragMove(e) {
+  if (!draggingPin) return;
+  const wrap = document.getElementById('fpCanvasWrap'); if (!wrap) return;
+  const rect = wrap.getBoundingClientRect();
+  const cam = cctvCameras.find(c => c.id === draggingPin.camId); if (!cam) return;
+  if (draggingPin.mode === 'move') {
+    const xPct = ((e.clientX - rect.left) / rect.width) * 100;
+    const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+    cam.mapX = Math.max(0, Math.min(100, xPct));
+    cam.mapY = Math.max(0, Math.min(100, yPct));
+  } else if (draggingPin.mode === 'rotate') {
+    const pinCx = rect.left + (cam.mapX / 100) * rect.width;
+    const pinCy = rect.top + (cam.mapY / 100) * rect.height;
+    const dx = e.clientX - pinCx, dy = e.clientY - pinCy;
+    let angle = Math.atan2(dx, -dy) * 180 / Math.PI;
+    if (angle < 0) angle += 360;
+    cam.mapAngle = Math.round(angle);
+  }
+  renderFloorPlanPins();
+}
+
+function endPinDrag() {
+  draggingPin = null;
+  document.removeEventListener('pointermove', handlePinDragMove);
+  document.removeEventListener('pointerup', endPinDrag);
 }
 
 function updateMapStats(analyzed, totalOnLevel) {
@@ -2880,6 +3163,7 @@ function collectProjectState() {
     cptedImages,
     cctvCameras,
     nextCctvId,
+    floorPlans,
     guardFields: {
       company: document.getElementById('g-company')?.value,
       contract: document.getElementById('g-contract')?.value,
@@ -3000,6 +3284,10 @@ function restoreProjectState(state) {
   refreshAllLevelSelects();
   updateCctvCount(); checkAnalyzeAll();
   if (cctvCameras.some(c=>c.analysis)) { buildCctvScore(); buildCctvNarrative(); }
+  floorPlans = state.floorPlans || {};
+  activeMapView = 'schematic';
+  placingCameraId = null;
+  draggingPin = null;
   renderMapLevelTabs(); drawMap();
 
   // --- Guard ---
