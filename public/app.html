@@ -542,6 +542,7 @@ select.form-input option{background:var(--dark)}
         <div class="fp-pins-layer" id="fpPinsLayer"></div>
       </div>
       <div class="fp-sidebar">
+        <button class="add-slot-btn" style="width:100%;justify-content:center;margin-bottom:10px" onclick="beginAddNewPin()">+ DROP NEW PIN</button>
         <div id="fpPlacingBanner"></div>
         <div class="fp-sidebar-title">Cameras on this level</div>
         <div id="fpCameraList"></div>
@@ -859,6 +860,22 @@ select.form-input option{background:var(--dark)}
   </div>
 </div>
 
+<div class="modal-ov" id="fpPickerModal">
+  <div class="modal-box" style="max-width:560px">
+    <div class="modal-head"><span class="modal-title">LINK PIN TO A CAMERA</span><button class="modal-close" onclick="closeFpPickerModal()">&#10005;</button></div>
+    <div class="modal-body">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:12px">Choose an already-uploaded camera photo to place here, or upload a new one.</div>
+      <div id="fpPickerExistingWrap">
+        <div class="fp-sidebar-title">Existing uploaded photos</div>
+        <div id="fpPickerExistingGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"></div>
+      </div>
+      <div class="fp-sidebar-title">Or upload a new photo</div>
+      <input type="file" accept="image/*" id="fpNewPinFileInput" style="display:none" onchange="handleFpNewPinUpload(this)">
+      <button class="add-slot-btn" style="width:100%;justify-content:center" onclick="document.getElementById('fpNewPinFileInput').click()">+ UPLOAD NEW PHOTO</button>
+    </div>
+  </div>
+</div>
+
 <script>
 // ═══════════════════════════════════════════
 // STATE
@@ -884,6 +901,7 @@ let floorPlans = {}; // level -> {data}
 let activeMapView = 'schematic'; // 'schematic' | 'floorplan'
 let placingCameraId = null; // camera id currently waiting for a click-to-place on the floor plan
 let draggingPin = null; // {camId, mode:'move'|'rotate'}
+let pendingPinCoords = null; // {x,y} (% of floor plan image) waiting on a photo pick from fpPickerModal
 
 const API = "/api/analyze";
 const MODEL = "claude-sonnet-5"; // kept for reference; the model is now set server-side in /api/analyze
@@ -2125,8 +2143,27 @@ function beginPlaceCamera(id) {
 function renderPlacingBanner() {
   const el = document.getElementById('fpPlacingBanner'); if (!el) return;
   if (placingCameraId == null) { el.innerHTML = ''; return; }
+  if (placingCameraId === 'NEW') {
+    el.innerHTML = `<div class="fp-placing-banner">Click on the floor plan to drop a new pin</div>`;
+    return;
+  }
   const cam = cctvCameras.find(c => c.id === placingCameraId);
   el.innerHTML = `<div class="fp-placing-banner">Click on the floor plan to place ${escAttr(cam ? cam.name : 'camera')}</div>`;
+}
+
+// Starts "drop a new pin anywhere" mode -- distinct from beginPlaceCamera(id),
+// which places a specific already-listed camera. Clicking the floor plan while
+// this is active doesn't move an existing camera; it opens the photo picker
+// (openFpPickerModal) so the pin can be linked to an existing or newly-uploaded
+// photo, per the user's request to "drop a pin and have it reference the
+// corresponding picture" rather than only being able to place cameras that
+// already exist as cards.
+function beginAddNewPin() {
+  placingCameraId = (placingCameraId === 'NEW') ? null : 'NEW';
+  const wrap = document.getElementById('fpCanvasWrap');
+  if (wrap) wrap.classList.toggle('placing', placingCameraId != null);
+  renderFloorPlanCameraList();
+  renderPlacingBanner();
 }
 
 function handleFloorPlanClick(e) {
@@ -2134,17 +2171,112 @@ function handleFloorPlanClick(e) {
   if (e.target.closest('.fp-pin')) return;
   const wrap = document.getElementById('fpCanvasWrap'); if (!wrap) return;
   const rect = wrap.getBoundingClientRect();
-  const xPct = ((e.clientX - rect.left) / rect.width) * 100;
-  const yPct = ((e.clientY - rect.top) / rect.height) * 100;
+  const xPct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / rect.width) * 100));
+  const yPct = Math.max(0, Math.min(100, ((e.clientY - rect.top) / rect.height) * 100));
+
+  if (placingCameraId === 'NEW') {
+    pendingPinCoords = { x: xPct, y: yPct };
+    placingCameraId = null;
+    wrap.classList.remove('placing');
+    renderFloorPlanCameraList();
+    renderPlacingBanner();
+    openFpPickerModal();
+    return;
+  }
+
   const cam = cctvCameras.find(c => c.id === placingCameraId);
   if (cam) {
-    cam.mapX = Math.max(0, Math.min(100, xPct));
-    cam.mapY = Math.max(0, Math.min(100, yPct));
+    cam.mapX = xPct;
+    cam.mapY = yPct;
     if (cam.mapAngle == null) cam.mapAngle = 0;
   }
   placingCameraId = null;
-  if (wrap) wrap.classList.remove('placing');
+  wrap.classList.remove('placing');
   drawMap();
+}
+
+// Populates the photo picker with every uploaded camera photo that isn't
+// currently placed on ANY floor plan (regardless of which level it's
+// nominally assigned to) -- picking one reassigns it to this level and this
+// pin location, since a camera only has one placement at a time.
+function openFpPickerModal() {
+  // Always rebuilds fully from the stable outer wrap rather than patching the
+  // inner grid div in place -- the grid div only exists in the "there are
+  // unplaced photos" state and gets replaced entirely by the "none available"
+  // message otherwise, so conditionally patching it (instead of rebuilding
+  // from the wrap every time) meant that once zero unplaced photos had been
+  // shown once, the grid div was gone for good and could never come back even
+  // after a new unplaced photo appeared later.
+  const wrap = document.getElementById('fpPickerExistingWrap');
+  if (wrap) {
+    const unplaced = cctvCameras.filter(c => c.img && (c.mapX == null || c.mapY == null));
+    if (!unplaced.length) {
+      wrap.innerHTML = `<div class="fp-sidebar-title">Existing uploaded photos</div><div style="font-size:10px;color:var(--muted);margin-bottom:16px">No unplaced camera photos available — every uploaded photo is already pinned somewhere. Upload a new one below instead.</div>`;
+    } else {
+      wrap.innerHTML = `<div class="fp-sidebar-title">Existing uploaded photos</div><div id="fpPickerExistingGrid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"></div>`;
+      const g = document.getElementById('fpPickerExistingGrid');
+      g.innerHTML = unplaced.map(c => `
+        <div onclick="pickExistingCameraForPin(${c.id})" style="cursor:pointer;border:1px solid var(--border);border-radius:4px;overflow:hidden;text-align:center;transition:border-color .15s" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          <img src="${c.img}" style="width:100%;height:64px;object-fit:cover;display:block">
+          <div style="font-size:8px;padding:3px 4px;color:var(--muted);font-family:'IBM Plex Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escAttr(c.name)}</div>
+        </div>`).join('');
+    }
+  }
+  document.getElementById('fpPickerModal').classList.add('open');
+}
+
+function closeFpPickerModal() {
+  document.getElementById('fpPickerModal').classList.remove('open');
+  pendingPinCoords = null;
+  document.getElementById('fpNewPinFileInput').value = '';
+}
+document.getElementById('fpPickerModal').addEventListener('click', e => { if (e.target === document.getElementById('fpPickerModal')) closeFpPickerModal(); });
+
+// Links an already-uploaded, currently-unplaced camera photo to the pending pin
+// location -- reassigns that camera to the active level (a camera only lives on
+// one floor plan at a time) rather than creating a duplicate.
+function pickExistingCameraForPin(camId) {
+  const cam = cctvCameras.find(c => c.id === camId);
+  if (!cam || !pendingPinCoords) { closeFpPickerModal(); return; }
+  cam.level = activeMapLevel;
+  cam.mapX = pendingPinCoords.x;
+  cam.mapY = pendingPinCoords.y;
+  if (cam.mapAngle == null) cam.mapAngle = 0;
+  pendingPinCoords = null;
+  document.getElementById('fpPickerModal').classList.remove('open');
+  refreshAllLevelSelects();
+  renderMapLevelTabs();
+  drawMap();
+}
+
+// Uploads a brand-new photo, creates a new camera card for it (same "CAM-0N —
+// CUSTOM" naming as the existing "+ ADD CAMERA" flow), and immediately pins it
+// at the pending location -- so a floor plan pin never has to be created
+// through the CCTV page first.
+async function handleFpNewPinUpload(input) {
+  const file = input.files[0]; if (!file || !pendingPinCoords) return;
+  const coords = pendingPinCoords;
+  const reader = new FileReader();
+  reader.onload = async e => {
+    const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+    if (result.error) {
+      alert(`This photo could not be used: ${result.error}`);
+      return;
+    }
+    const idx = nextCctvId++;
+    const cam = newCctvCard(idx, `CAM-0${cctvCameras.length + 1} \u2014 CUSTOM`, 'custom area', activeMapLevel);
+    cam.mapX = coords.x; cam.mapY = coords.y; cam.mapAngle = 0;
+    cctvCameras.push(cam);
+    renderCctvCard(cam);
+    applyCctvCardPreview(idx, result.dataUrl);
+    refreshAllLevelSelects();
+    renderMapLevelTabs();
+    document.getElementById('cctvUploadCount').textContent = `${cctvCameras.filter(c=>c.img).length} of ${cctvCameras.length} cameras uploaded`;
+    pendingPinCoords = null;
+    document.getElementById('fpPickerModal').classList.remove('open');
+    drawMap();
+  };
+  reader.readAsDataURL(file);
 }
 
 function unplaceCamera(id) {
@@ -2874,6 +3006,73 @@ Respond ONLY with valid JSON (no markdown): In any text field, never use a liter
   }
 }
 
+// Composites a level's uploaded floor plan with its placed camera pins and FOV
+// cones drawn directly onto a canvas, so the result is one flat image suitable
+// for embedding in the PDF via the same pipeline as any other photo. Mirrors
+// the on-screen pin math (angle 0 = up/north, clockwise) used by
+// renderFloorPlanPins/angleToXY, just drawn with canvas primitives instead of
+// CSS. Returns null if there's no floor plan for this level, or no cameras
+// placed on it (nothing to show).
+function renderFloorPlanCompositeImage(level) {
+  const plan = floorPlans[level];
+  if (!plan) return Promise.resolve(null);
+  const camsOnLevel = cctvCameras.filter(c => c.level === level && c.mapX != null && c.mapY != null);
+  if (!camsOnLevel.length) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const maxDim = 1400;
+        let w = img.naturalWidth, h = img.naturalHeight;
+        if (!w || !h) return resolve(null);
+        if (w > h && w > maxDim) { h = Math.round(h * maxDim / w); w = maxDim; }
+        else if (h > maxDim) { w = Math.round(w * maxDim / h); h = maxDim; }
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        const radius = Math.max(30, Math.min(w, h) * 0.1);
+        camsOnLevel.forEach((cam, i) => {
+          const px = (cam.mapX / 100) * w, py = (cam.mapY / 100) * h;
+          const fov = cam.analysis?.coverage?.fovDegrees || 90;
+          const angle = cam.mapAngle || 0;
+          // Canvas angles are measured from the positive x-axis, clockwise (since
+          // canvas y increases downward) -- so "up" (our angle 0) is canvas angle
+          // -90deg. Shifting by -90 converts our up/clockwise convention directly.
+          const startDeg = angle - fov / 2 - 90, endDeg = angle + fov / 2 - 90;
+          ctx.beginPath();
+          ctx.moveTo(px, py);
+          ctx.arc(px, py, radius, startDeg * Math.PI / 180, endDeg * Math.PI / 180);
+          ctx.closePath();
+          ctx.fillStyle = 'rgba(37,99,235,0.28)';
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(37,99,235,0.65)';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          const dotR = Math.max(9, radius * 0.16);
+          ctx.beginPath();
+          ctx.arc(px, py, dotR, 0, Math.PI * 2);
+          ctx.fillStyle = '#f0a500';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          const camLabel = (cam.name || '').match(/CAM-?0*(\d+)/i);
+          const shortLabel = 'C' + (camLabel ? camLabel[1] : (i + 1));
+          ctx.fillStyle = '#000000';
+          ctx.font = `bold ${Math.max(10, Math.round(dotR))}px Arial`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(shortLabel, px, py + 1);
+        });
+        resolve(canvas.toDataURL('image/png'));
+      } catch (e) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = plan.data;
+  });
+}
+
 async function buildAssessmentPdf() {
   const PW = 612, PH = 792, M = 54, CW = PW - 2 * M;
   const PC = { ink:[20,22,26], inkDim:[90,96,105], inkFaint:[140,146,155], accent:[176,122,0], red:[200,60,55], yellow:[170,120,20], green:[45,130,70], rule:[220,222,228] };
@@ -2902,6 +3101,16 @@ async function buildAssessmentPdf() {
     const d = pdfParseJpegDims(bytes);
     if (!d) { pdfPhotoFailures.push(`${cam.name} (CCTV): image dimensions could not be read`); continue; }
     cctvPhotoBytes[cam.id] = { bytes, ...d };
+  }
+  const floorPlanCompositeBytes = {};
+  for (const level of propertyLevels) {
+    const compositeUrl = await renderFloorPlanCompositeImage(level);
+    if (!compositeUrl) continue;
+    const bytes = await pdfDataUrlToJpegBytes(compositeUrl);
+    if (!bytes) { pdfPhotoFailures.push(`${level} floor plan: browser could not re-encode the composite image for the PDF`); continue; }
+    const d = pdfParseJpegDims(bytes);
+    if (!d) { pdfPhotoFailures.push(`${level} floor plan: composite image dimensions could not be read`); continue; }
+    floorPlanCompositeBytes[level] = { bytes, ...d };
   }
   window._lastPdfPhotoFailures = pdfPhotoFailures; // read by exportReport() after this completes
 
@@ -3161,11 +3370,24 @@ async function buildAssessmentPdf() {
 
   // ===== SECTION II — CCTV =====
   const analyzedCams = cctvCameras.filter(c=>c.analysis);
-  if (analyzedCams.length) {
+  const placementLevels = Object.keys(floorPlanCompositeBytes);
+  if (analyzedCams.length || placementLevels.length) {
     newPage();
     sectionHeader('II', 'CCTV System Analysis', scores.cctv);
     text(`${analyzedCams.length} of ${cctvCameras.length} cameras analyzed.`, { size:10, color:PC.inkDim });
     space(10);
+    if (placementLevels.length) {
+      need(14); line('CAMERA PLACEMENT MAPS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const level of placementLevels) {
+        need(20);
+        line(level, { size:11, bold:true, x:M }); y += 16;
+        embedPhoto(floorPlanCompositeBytes[level], 280);
+        space(6);
+      }
+      space(4);
+      drawRule();
+      space(10);
+    }
     for (const cam of analyzedCams) {
       const a = cam.analysis;
       need(40);
