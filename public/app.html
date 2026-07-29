@@ -1335,13 +1335,29 @@ Evaluate ONLY what is visible in this photo against the four CPTED principles (n
 // firing many vision requests in quick succession, or an occasional slow
 // response. One retry with a short backoff resolves the vast majority of these
 // without meaningfully slowing down the common case where nothing fails.
-async function fetchWithRetry(body, maxRetries429 = 4, maxRetries5xx = 2) {
+// Shared across every fetchWithRetry call in the session (all CPTED zone calls,
+// the CPTED synthesis call, and all CCTV calls funnel through here). Once any one
+// of them gets rate-limited, every other call -- including ones for zones/cameras
+// that haven't made their first attempt yet -- waits out the same cooldown before
+// firing. Without this, each zone in a 50+ zone batch retried in isolation and
+// could exhaust its own retry budget colliding with the same still-active rate
+// limit window, which is exactly how "28 of 52 zones failed" happens: the ones
+// that failed weren't unlucky, they were just later in the sequence and kept
+// hitting a wall that had already been hit (and not waited out) by earlier zones.
+let rateLimitCooldownUntil = 0;
+async function waitForRateLimitCooldown() {
+  const remaining = rateLimitCooldownUntil - Date.now();
+  if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
+}
+
+async function fetchWithRetry(body, maxRetries429 = 6, maxRetries5xx = 2) {
   let lastErr;
   let retry429Count = 0, retry5xxCount = 0;
   let attempt = 0;
   const maxAttempts = 1 + maxRetries429 + maxRetries5xx; // safety ceiling
   while (attempt < maxAttempts) {
     attempt++;
+    await waitForRateLimitCooldown();
     let resp, data;
     try {
       resp = await fetch(API, {
@@ -1360,15 +1376,19 @@ async function fetchWithRetry(body, maxRetries429 = 4, maxRetries5xx = 2) {
     const msg = data.error || `Server returned HTTP ${resp.status}`;
     if (resp.status === 429) {
       // Rate limits reset on a real time window (often per-minute), not in a couple
-      // seconds — the old 1.2-3.6s backoff here was nowhere near long enough, which
-      // is why large batches (50+ images) kept failing even with "retries." Honor
-      // Anthropic's own retry-after value when given; otherwise wait long enough
-      // (8s, growing) for a per-minute window to plausibly have reset.
+      // seconds. Previously this capped the wait at 30s even when the server's own
+      // retryAfter asked for longer -- meaning we'd retry before the real window had
+      // reset, burn a retry attempt hitting 429 again, and repeat until the whole
+      // retry budget was gone without ever actually waiting long enough. Now the
+      // server's stated value is honored up to a much higher ceiling, and it also
+      // sets the shared cooldown above so every other in-flight/upcoming request
+      // backs off together instead of each colliding with the same window alone.
       if (retry429Count < maxRetries429) {
         retry429Count++;
-        const waitSec = data.retryAfter ? Math.min(Number(data.retryAfter) + 1, 30) : Math.min(8 * retry429Count, 25);
+        const waitSec = data.retryAfter ? Math.min(Number(data.retryAfter) + 2, 75) : Math.min(10 * retry429Count, 60);
+        rateLimitCooldownUntil = Math.max(rateLimitCooldownUntil, Date.now() + waitSec * 1000);
         lastErr = new Error(msg);
-        await new Promise(r=>setTimeout(r, waitSec*1000));
+        await waitForRateLimitCooldown();
         continue;
       }
       throw new Error(msg);
