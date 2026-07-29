@@ -834,8 +834,8 @@ select.form-input option{background:var(--dark)}
   </div>
   <div class="sb-section">
     <div class="sb-label">Additional Context</div>
-    <textarea class="form-input" id="execSummaryNotes" placeholder="Optional — notes for the AI to weigh when writing the Executive Summary (e.g. recent incidents, planned upgrades, budget constraints, tenant complaints, prior audit findings)..." style="font-size:10px;padding:6px 9px;min-height:70px;resize:vertical"></textarea>
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-top:4px">Only used when generating the Executive Summary — not shown elsewhere in the report.</div>
+    <textarea class="form-input" id="execSummaryNotes" placeholder="Optional — notes for the AI to weigh across every analysis (e.g. recent incidents, planned upgrades, a fix already made that a photo won't show, budget constraints, prior audit findings)..." style="font-size:10px;padding:6px 9px;min-height:70px;resize:vertical"></textarea>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-top:4px">Factored into CPTED, CCTV, Guard, and Access Control analysis, plus the Executive Summary.</div>
   </div>
   <div class="sb-section">
     <div class="sb-label">Full Assessment</div>
@@ -937,6 +937,22 @@ function compressImageDataUrl(dataUrl, maxDim=1400, quality=0.78, sourceFile=nul
   });
 }
 function escAttr(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
+
+// Freeform assessor notes from the "Additional Context" sidebar field. Read fresh
+// at each call site (rather than cached) so edits mid-session are picked up by
+// the next analysis run without requiring a page reload.
+function getExecContextNotes() {
+  return document.getElementById('execSummaryNotes')?.value?.trim() || '';
+}
+// Wraps a note in a consistent instruction block for injection into any analysis
+// prompt. `subject` briefly describes what the notes might affect for that
+// specific prompt, so the model treats it as context, not as an override of
+// what's actually visible/reported.
+function contextNotesBlock(subject) {
+  const notes = getExecContextNotes();
+  if (!notes) return '';
+  return `\n\nAdditional context provided by the assessor (may explain something not fully visible in a photo or captured in the form fields -- e.g. a fix already made, a planned change, or a recent incident -- weigh this when ${subject}, but do not ignore what is actually visible/reported just because a note says otherwise):\n${notes}`;
+}
 
 // More forgiving than a plain JSON.parse — strips markdown fences, then finds the
 // outermost {...} block even if the model added a sentence before/after it. This
@@ -1302,6 +1318,7 @@ function buildCptedZonePrompt(zone, obj, multiLevel) {
 
 Zone: ${label} (${obj.level})
 ${multiLevel ? `Note: this property has multiple levels (${propertyLevels.join(', ')}). If this zone photo shows vertical circulation (ramps, stairwells) or a level transition, weight your findings toward blind corners, sightlines, and unrestricted movement between levels.` : ''}
+${contextNotesBlock('scoring and describing this zone')}
 
 Evaluate ONLY what is visible in this photo against the four CPTED principles (natural surveillance, natural access control, territorial reinforcement, maintenance). Respond ONLY with valid JSON (no markdown, no backticks): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {
@@ -1476,6 +1493,7 @@ async function analyzeCpted() {
 
 ZONE FINDINGS (severity + short title only -- full detail was already reviewed by the field assessor):
 ${JSON.stringify(compactZonesForPrompt)}
+${contextNotesBlock('synthesizing the overall CPTED narrative and score')}
 
 Synthesize these into one overall assessment narrative. Do NOT reproduce the individual findings list -- that is handled separately. Respond ONLY with valid JSON (no markdown, no backticks): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {
@@ -1793,6 +1811,7 @@ async function analyzeCctvCam(idx) {
       so.innerHTML='<div class="scan-line"></div><div class="scan-txt">AI SCANNING\u2026</div>'; iw.appendChild(so); }
     const prompt = `You are a professional security consultant analyzing a CCTV camera image for a commercial property.
 Camera location: ${cam.zone} (${cam.level})
+${contextNotesBlock('scoring and describing this camera')}
 Respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {"overallScore":<0-100>,"placement":{"score":<0-100>,"assessment":"<1 sentence>"},"coverage":{"score":<0-100>,"fovDegrees":<number>,"estimatedRangeMeters":<number>,"assessment":"<1 sentence>"},"imageQuality":{"score":<0-100>,"resolution":"<SD/HD/4K/Unknown>","nightVision":"<Yes/No/Unknown>","assessment":"<1 sentence>"},"blindSpots":["<blind spot>"],"vulnerabilities":[{"severity":"<critical|warning|info>","issue":"<title>","detail":"<1-2 sentences>"}],"positives":["<positive>"],"annotations":[{"type":"<critical|warning|info|good>","label":"<max 18 chars>","x":<0-100>,"y":<0-100>,"w":<5-40>,"h":<5-40>}],"recommendations":["<recommendation>"],"summary":"<2-3 sentence professional summary>"}`;
     const data = await fetchWithRetry({max_tokens:2000,content:[
@@ -2366,6 +2385,7 @@ Guard Program Details:
 
 Coverage schedule by zone (this property has distinct zones with potentially different operating hours and risk profiles — evaluate each zone's coverage independently and flag any zone left unguarded during hours it is likely to be occupied or accessible):
 ${zoneDesc}
+${contextNotesBlock('scoring and describing the guard program')}
 
 Evaluate this guard program and respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
 {"overallScore":<0-100>,"coverage":{"score":<0-100>,"assessment":"<1 sentence>"},"accountability":{"score":<0-100>,"assessment":"<1 sentence>"},"training":{"score":<0-100>,"assessment":"<1 sentence>"},"costEffectiveness":{"score":<0-100>,"assessment":"<1 sentence>"},"findings":[{"severity":"<critical|warning|good>","area":"<area, name the zone if relevant>","title":"<title>","detail":"<2 sentences>"}],"costBenchmark":{"monthlyRate":${data.cost},"marketRangeLow":<number>,"marketRangeHigh":<number>,"assessment":"<1 sentence>","city":"Portland, Oregon"},"recommendations":["<recommendation 1>","<recommendation 2>","<recommendation 3>"],"summary":"<3-4 sentence professional evaluation summary>"}`;
@@ -2568,6 +2588,7 @@ Property-wide credential governance:
 
 Zone-by-zone access control (this property has distinct zones — evaluate the transitions BETWEEN zones as well, e.g. whether someone from a public/retail zone can move unrestricted into a parking or office zone, and whether the right system type is actually controlling that specific transition):
 ${zoneDesc}
+${contextNotesBlock('scoring and describing the access control system')}
 
 Note on vehicle gates: a "ticket dispenser — anonymous vehicle entry" and "payment gate — pay-on-exit" are normal, expected configurations for a public pay parking garage and should NOT by themselves be scored as a credential-management failure — anonymous public vehicle entry is standard industry practice. Instead, focus evaluation on whether the PEDESTRIAN transition from that vehicle zone into the rest of the building (e.g. an elevator lobby) is properly credentialed and monitored, since that is the actual security boundary in a public-parking-into-private-building scenario. An "automatic roller door — scheduled nightly closure" is a genuine physical access control measure and should be credited accordingly, while noting any gaps such as lack of confirmed manual override procedures or emergency egress provisions if mentioned in the notes.
 
