@@ -127,6 +127,12 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .cctv-m:last-child{border-right:none}
 .cctv-m-val{font-family:'Bebas Neue',sans-serif;font-size:16px;line-height:1;margin-bottom:1px}
 .cctv-m-lbl{font-family:'IBM Plex Mono',monospace;font-size:7px;letter-spacing:.8px;color:var(--muted);text-transform:uppercase}
+.cctv-monitor{padding:8px 12px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:6px}
+.cctv-monitor-select{width:100%;background:var(--panel);border:1px solid var(--border);color:var(--blue);font-size:9px;font-family:'IBM Plex Mono',monospace;padding:5px 8px;border-radius:3px;letter-spacing:.6px;text-transform:uppercase;cursor:pointer}
+.cctv-monitor-sched{display:flex;flex-direction:column;gap:4px}
+.cctv-monitor-sched .sched-row{margin-bottom:0}
+.cctv-monitor-sched .sched-row .form-label{width:38px}
+.cctv-monitor-sched .sched-row .form-input{font-size:10px;padding:4px 6px}
 
 /* ── COVERAGE MAP ── */
 .map-wrap{background:var(--dark);border:1px solid var(--border);border-radius:6px;overflow:hidden;margin-bottom:1rem}
@@ -1685,7 +1691,17 @@ function renderCptedResults(a) {
 // ═══════════════════════════════════════════
 function newCctvCard(id, name, zone, level) {
   return {id, name, zone, level: level || propertyLevels[0], img:null, analysis:null, analysisFailed:false,
-    mapX:null, mapY:null, mapAngle:0}; // floor-plan pin position (% of image) and aim direction (deg, 0=up, clockwise)
+    mapX:null, mapY:null, mapAngle:0, // floor-plan pin position (% of image) and aim direction (deg, 0=up, clockwise)
+    monitoring:'none', monitorStart:'6:00 PM', monitorEnd:'6:00 AM'}; // monitoring: 'none' | 'remote' | 'onsite' — defaults to not-monitored
+}
+
+// Reuses the same half-hour preset list built for the Guard schedule dropdowns
+// (GUARD_TIME_OPTIONS, defined further down in the Guard section but evaluated
+// before initCctvCameras() runs at the bottom of the script) so both sections
+// share one consistent time-of-day picker.
+function cctvTimeSelectHtml(id, field, current) {
+  const opts = GUARD_TIME_OPTIONS.includes(current) ? GUARD_TIME_OPTIONS : [current, ...GUARD_TIME_OPTIONS];
+  return `<select class="form-input" onchange="updateCctvMonitorField(${id},'${field}',this.value)">${opts.map(t=>`<option value="${escAttr(t)}" ${t===current?'selected':''}>${escAttr(t)}</option>`).join('')}</select>`;
 }
 
 function renderCctvCard(cam) {
@@ -1699,9 +1715,33 @@ function renderCctvCard(cam) {
       <span class="badge b-wait" id="cb-${cam.id}">AWAITING IMAGE</span>
       <button type="button" class="tile-delete-btn" style="position:static;flex-shrink:0" onclick="removeCctvCamera(${cam.id})" title="Delete this camera">&#10005;</button>
     </div>
+    <div class="cctv-monitor" id="cmw-${cam.id}">
+      <select class="cctv-monitor-select" id="cmt-${cam.id}" onchange="setCctvMonitoring(${cam.id}, this.value)">
+        <option value="none" ${cam.monitoring==='none'?'selected':''}>Not Monitored</option>
+        <option value="remote" ${cam.monitoring==='remote'?'selected':''}>Remotely Monitored</option>
+        <option value="onsite" ${cam.monitoring==='onsite'?'selected':''}>Onsite Guard Monitored</option>
+      </select>
+      <div class="cctv-monitor-sched" id="cms-${cam.id}" style="${cam.monitoring==='none'?'display:none':''}">
+        <div class="sched-row"><span class="form-label sched-lbl">Starts</span>${cctvTimeSelectHtml(cam.id,'monitorStart',cam.monitorStart)}</div>
+        <div class="sched-row"><span class="form-label sched-lbl">Stops</span>${cctvTimeSelectHtml(cam.id,'monitorEnd',cam.monitorEnd)}</div>
+      </div>
+    </div>
     <div class="cctv-drop" id="cd-${cam.id}"><span style="font-size:24px">&#128247;</span><div style="font-size:11px;font-weight:600;color:var(--white)">Upload camera photo or screenshot</div><div style="font-size:9px;color:var(--muted)">Photo of unit, mount, or live feed</div><input type="file" accept="image/*" onchange="handleCctvUpload(this,${cam.id})"></div>
     <div class="cctv-findings" id="cf-${cam.id}"></div>`;
   grid.appendChild(card);
+}
+
+function setCctvMonitoring(id, val) {
+  const cam = cctvCameras.find(c=>c.id===id);
+  if (!cam) return;
+  cam.monitoring = val;
+  const sched = document.getElementById('cms-'+id);
+  if (sched) sched.style.display = val === 'none' ? 'none' : '';
+}
+
+function updateCctvMonitorField(id, field, val) {
+  const cam = cctvCameras.find(c=>c.id===id);
+  if (cam) cam[field] = val;
 }
 
 function setCctvLevel(id, level) {
@@ -3395,6 +3435,10 @@ async function buildAssessmentPdf() {
       const lbl = `${a.overallScore}/100`;
       line(lbl, { size:12, bold:true, color:scoreRGB(a.overallScore), x: PW-M-measure(lbl,12,true) });
       y += 16;
+      const monLbl = cam.monitoring === 'remote' ? 'Remotely Monitored' : cam.monitoring === 'onsite' ? 'Onsite Guard Monitored' : 'Not Monitored';
+      const monText = cam.monitoring === 'none' ? monLbl : `${monLbl}  (${cam.monitorStart} \u2013 ${cam.monitorEnd})`;
+      text(`MONITORING: ${monText}`, { size:9, color:PC.inkFaint });
+      space(4);
       if (cctvPhotoBytes[cam.id]) embedPhoto(cctvPhotoBytes[cam.id], 180);
       text(a.summary || '', { size:9.5, color:PC.inkDim, leading:1.5 });
       space(4);
