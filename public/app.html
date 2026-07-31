@@ -176,8 +176,9 @@ header{background:var(--dark);border-bottom:1px solid var(--border);padding:0 1.
 .fp-sidebar-title{font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
 .fp-cam-row{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 8px;border:1px solid var(--border);border-radius:3px;margin-bottom:6px;font-size:10px}
 .fp-cam-row.unplaced{border-color:rgba(240,165,0,.4)}
-.fp-place-btn{background:transparent;border:1px solid var(--accent);color:var(--accent);font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.5px;padding:3px 7px;border-radius:2px;cursor:pointer}
+.fp-place-btn{background:transparent;border:1px solid var(--accent);color:var(--accent);font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.5px;padding:3px 7px;border-radius:2px;cursor:pointer;flex-shrink:0}
 .fp-place-btn.active{background:var(--accent);color:#000}
+.fp-cam-name-input{min-width:0;font-size:9px;text-overflow:ellipsis}
 .fp-placing-banner{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--accent);letter-spacing:.5px;margin-bottom:10px;padding:6px 8px;border:1px solid var(--accent);border-radius:3px;background:rgba(240,165,0,.08)}
 .fp-replace-btn{background:transparent;border:1px solid var(--border);color:var(--muted);font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.5px;padding:5px 9px;border-radius:3px;cursor:pointer;width:100%;margin-top:12px}
 .fp-replace-btn:hover{border-color:var(--accent);color:var(--accent)}
@@ -2336,7 +2337,7 @@ function renderFloorPlanCameraList() {
     const placed = c.mapX != null && c.mapY != null;
     const isPlacing = placingCameraId === c.id;
     return `<div class="fp-cam-row ${placed ? '' : 'unplaced'}">
-      <span>${escAttr(c.name)}</span>
+      <input type="text" class="cctv-name-input fp-cam-name-input" value="${escAttr(c.name)}" onchange="renameCctvCamera(${c.id},this.value)" title="Click to rename this camera">
       <button class="fp-place-btn ${isPlacing ? 'active' : ''}" onclick="beginPlaceCamera(${c.id})">${isPlacing ? 'CLICK MAP\u2026' : (placed ? 'MOVE' : 'PLACE')}</button>
     </div>`;
   }).join('');
