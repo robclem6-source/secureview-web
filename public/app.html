@@ -485,7 +485,7 @@ select.form-input option{background:var(--dark)}
 
     <div style="display:flex;gap:8px;align-items:center;margin-top:.8rem">
       <button class="add-slot-btn" onclick="addCctvSlot()">+ ADD CAMERA</button>
-      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="cctvUploadCount">0 of 4 cameras uploaded</span>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="cctvUploadCount">0 of 0 cameras uploaded</span>
     </div>
 
     <div style="margin-top:.8rem;padding:.8rem;background:var(--dark);border:1px solid var(--border);border-radius:6px">
@@ -498,6 +498,26 @@ select.form-input option{background:var(--dark)}
       </div>
       <div style="font-size:10px;color:var(--muted);margin-top:6px">Pick the level first, then select as many camera photos as you like — each becomes its own camera card tagged to that level.</div>
     </div>
+  </div>
+
+  <!-- Monitor Wall / Multiview Screenshots -->
+  <div class="panel">
+    <div class="section-row">
+      <div>
+        <div class="panel-title">&#128250; MONITOR WALL / MULTIVIEW SCREENSHOTS</div>
+        <div class="panel-sub">UPLOAD A SCREENSHOT OF THE CUSTOMER'S CCTV MONITOR OR DVR/NVR MULTIVIEW DISPLAY — AI REVIEWS FEED COUNT, IMAGE QUALITY &amp; RECORDING STATUS</div>
+      </div>
+      <button class="btn-blue" id="analyzeAllMonitorShotsBtn" onclick="analyzeAllMonitorShots()" disabled>&#128269; ANALYZE ALL</button>
+    </div>
+
+    <div class="cctv-grid" id="monitorShotGrid"></div>
+
+    <div style="display:flex;gap:8px;align-items:center;margin-top:.8rem">
+      <button class="add-slot-btn" onclick="triggerMonitorShotUpload()">+ ADD MONITOR SCREENSHOT</button>
+      <input type="file" accept="image/*" multiple id="monitorShotFileInput" style="display:none" onchange="handleMonitorShotUpload(this)">
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="monitorShotUploadCount">0 uploaded</span>
+    </div>
+    <div style="font-size:10px;color:var(--muted);margin-top:6px">Upload one or more screenshots of the monitor wall, guard station display, or DVR/NVR multiview — add as many as needed, each is analyzed independently.</div>
   </div>
 
   <!-- Coverage Map -->
@@ -846,6 +866,14 @@ select.form-input option{background:var(--dark)}
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-top:4px">Factored into CPTED, CCTV, Guard, and Access Control analysis, plus the Executive Summary.</div>
   </div>
   <div class="sb-section">
+    <div class="sb-label">Section Reports</div>
+    <button class="btn-ghost" id="runCptedBtn" onclick="runSectionAndBuild('cpted')" style="width:100%;margin-bottom:6px;font-size:9px">&#127795; RUN CPTED &amp; BUILD REPORT</button>
+    <button class="btn-ghost" id="runCctvBtn" onclick="runSectionAndBuild('cctv')" style="width:100%;margin-bottom:6px;font-size:9px">&#128249; RUN CCTV &amp; BUILD REPORT</button>
+    <button class="btn-ghost" id="runGuardBtn" onclick="runSectionAndBuild('guard')" style="width:100%;margin-bottom:6px;font-size:9px">&#128110; RUN GUARD &amp; BUILD REPORT</button>
+    <button class="btn-ghost" id="runAccessBtn" onclick="runSectionAndBuild('access')" style="width:100%;margin-bottom:6px;font-size:9px">&#128272; RUN ACCESS CONTROL &amp; BUILD REPORT</button>
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5" id="sectionReportStatus">Runs just that section's analysis, then generates a standalone PDF for it only.</div>
+  </div>
+  <div class="sb-section">
     <div class="sb-label">Full Assessment</div>
     <button class="btn-primary" id="runFullBtn" onclick="runFullAssessment()" style="width:100%;margin-bottom:6px;font-size:13px;justify-content:center">&#9889; RUN ALL &amp; BUILD REPORT</button>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-bottom:6px" id="runFullStatus">Runs CPTED, CCTV, Guard &amp; Access Control in sequence, then generates one combined PDF.</div>
@@ -900,6 +928,13 @@ let activeMapLevel = 'ALL';
 let cptedImages = {}; // zone -> {data, level}
 let cctvCameras = [];
 let nextCctvId = 0;
+
+// Monitor wall / multiview screenshots — a screenshot of the customer's guard
+// station display or DVR/NVR multiview showing several feeds at once. Kept as
+// its own array (not a cctvCameras entry) since it doesn't correspond to one
+// physical camera and has no level/zone/map placement.
+let monitorShots = [];
+let nextMonitorShotId = 0;
 
 // Floor plans — one optional uploaded image per property level, used as an
 // alternative to the abstract schematic coverage map. Cameras get pinned
@@ -1764,17 +1799,13 @@ function removeCctvCamera(id) {
 }
 
 function initCctvCameras() {
-  const defs = [
-    ['CAM-01 — MAIN ENTRY','main entry / lobby'],
-    ['CAM-02 — PARKING LOT','parking lot / perimeter'],
-    ['CAM-03 — LOADING DOCK','loading dock / service area'],
-    ['CAM-04 — INTERIOR / LOBBY','interior lobby / hallway'],
-  ];
+  const defs = []; // no pre-filled default cameras — every assessment starts empty; use "+ ADD CAMERA" or bulk upload
   defs.forEach(([name,zone]) => {
     const cam = newCctvCard(nextCctvId++, name, zone);
     cctvCameras.push(cam);
     renderCctvCard(cam);
   });
+  updateCctvCount();
   refreshAllLevelSelects();
 }
 
@@ -2031,6 +2062,234 @@ function buildCctvNarrative() {
   let t='';
   analyzed.forEach(c=>{t+=`[${c.name} — ${c.level}]\n${c.analysis.summary||''}\nRecommendations:\n${(c.analysis.recommendations||[]).map(r=>`  \u2022 ${r}`).join('\n')}\n\n`;});
   document.getElementById('cctvNarrativeText').textContent=t.trim();
+}
+
+// ═══════════════════════════════════════════
+// MONITOR WALL / MULTIVIEW SCREENSHOTS
+// A screenshot of the guard station monitor or DVR/NVR multiview showing several
+// camera feeds at once. Mirrors the per-camera CCTV card UI/analysis pipeline
+// (same fetchWithRetry, same compressImageDataUrl, same modal) but with its own
+// schema tailored to a multi-feed screenshot rather than a single camera.
+// ═══════════════════════════════════════════
+function newMonitorShot(id, name) {
+  return {id, name, img:null, analysis:null, analysisFailed:false};
+}
+
+function renderMonitorShotCard(shot) {
+  const grid = document.getElementById('monitorShotGrid');
+  const card = document.createElement('div');
+  card.className = 'cctv-card'; card.id = 'ms-'+shot.id;
+  card.innerHTML = `
+    <div class="cctv-card-head">
+      <input type="text" class="cctv-name-input" value="${escAttr(shot.name)}" onchange="renameMonitorShot(${shot.id},this.value)" title="Click to rename this screenshot">
+      <span class="badge b-wait" id="msb-${shot.id}">AWAITING IMAGE</span>
+      <button type="button" class="tile-delete-btn" style="position:static;flex-shrink:0" onclick="removeMonitorShot(${shot.id})" title="Delete this screenshot">&#10005;</button>
+    </div>
+    <div class="cctv-drop" id="msd-${shot.id}"><span style="font-size:24px">&#128250;</span><div style="font-size:11px;font-weight:600;color:var(--white)">Upload monitor / multiview screenshot</div><div style="font-size:9px;color:var(--muted)">Photo or screen capture of the monitor wall or DVR/NVR display</div><input type="file" accept="image/*" onchange="handleMonitorShotUpload(this,${shot.id})"></div>
+    <div class="cctv-findings" id="msf-${shot.id}"></div>`;
+  grid.appendChild(card);
+}
+
+function renameMonitorShot(id, newName) {
+  const shot = monitorShots.find(s=>s.id===id);
+  const trimmed = (newName || '').trim();
+  if (shot && trimmed) shot.name = trimmed;
+}
+
+function removeMonitorShot(id) {
+  monitorShots = monitorShots.filter(s => s.id !== id);
+  const card = document.getElementById('ms-'+id);
+  if (card) card.remove();
+  updateMonitorShotCount(); checkAnalyzeAllMonitorShots();
+}
+
+function updateMonitorShotCount() {
+  const n = monitorShots.filter(s=>s.img).length;
+  const el = document.getElementById('monitorShotUploadCount');
+  if (el) el.textContent = `${n} of ${monitorShots.length} uploaded`;
+}
+
+function checkAnalyzeAllMonitorShots() {
+  const btn = document.getElementById('analyzeAllMonitorShotsBtn');
+  if (btn) btn.disabled = !monitorShots.some(s=>s.img&&(!s.analysis||s.analysisFailed));
+}
+
+function markMonitorShotFailed(id, errorMsg) {
+  const shot = monitorShots.find(s=>s.id===id);
+  if (shot) { shot.img = null; shot.analysis = null; }
+  const card = document.getElementById('ms-'+id);
+  const drop = document.getElementById('msd-'+id);
+  const badge = document.getElementById('msb-'+id);
+  if (!card || !drop || !badge) return;
+  card.classList.remove('has-image','analyzing','analyzed');
+  card.classList.add('upload-error');
+  badge.className='badge b-err'; badge.textContent='UNREADABLE';
+  drop.innerHTML = `<span style="font-size:24px">&#9888;&#65039;</span><div style="font-size:11px;font-weight:600;color:var(--red)">Could not read this photo</div><div style="font-size:9px;color:var(--red);line-height:1.4;padding:0 8px;text-align:center">${escAttr(errorMsg)}</div><input type="file" accept="image/*" onchange="handleMonitorShotUpload(this,${id})">`;
+  drop.style.cssText='';
+}
+
+function applyMonitorShotPreview(id, compressedDataUrl) {
+  const shot = monitorShots.find(s=>s.id===id); if(!shot) return;
+  shot.img = compressedDataUrl;
+  const card = document.getElementById('ms-'+id);
+  const drop = document.getElementById('msd-'+id);
+  const badge = document.getElementById('msb-'+id);
+  if (!card || !drop || !badge) return;
+  card.classList.remove('upload-error');
+  card.classList.add('has-image');
+  badge.className='badge b-wait'; badge.textContent='READY TO ANALYZE';
+  drop.innerHTML = `<div class="cctv-img-wrap"><img src="${compressedDataUrl}"></div><input type="file" accept="image/*" onchange="handleMonitorShotUpload(this,${id})" style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%">`;
+  drop.style.cssText='min-height:unset;padding:0;position:relative';
+}
+
+function triggerMonitorShotUpload() { document.getElementById('monitorShotFileInput').click(); }
+
+async function handleMonitorShotUpload(input, existingId) {
+  const files = Array.from(input.files || []);
+  if (!files.length) return;
+
+  // Called two ways: onchange from an existing card's own drop-zone input (re-upload
+  // into that one card, existingId set) or from the top-level multi-file "+ ADD
+  // MONITOR SCREENSHOT" input (existingId undefined -- create one new card per file).
+  if (existingId != null) {
+    const file = files[0];
+    const reader = new FileReader();
+    reader.onload = async e => {
+      const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+      if (result.error) {
+        markMonitorShotFailed(existingId, result.error);
+        updateMonitorShotCount();
+        alert(`This photo could not be used: ${result.error}`);
+        return;
+      }
+      const shot = monitorShots.find(s=>s.id===existingId);
+      if (shot) shot.analysis = null;
+      applyMonitorShotPreview(existingId, result.dataUrl);
+      updateMonitorShotCount(); checkAnalyzeAllMonitorShots();
+    };
+    reader.readAsDataURL(file);
+    return;
+  }
+
+  for (const file of files) {
+    const id = nextMonitorShotId++;
+    const shot = newMonitorShot(id, `MONITOR SHOT ${monitorShots.length+1}`);
+    monitorShots.push(shot);
+    renderMonitorShotCard(shot);
+    await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = async e => {
+        const result = await compressImageDataUrl(e.target.result, 1400, 0.78, file);
+        if (result.error) { markMonitorShotFailed(id, result.error); }
+        else { applyMonitorShotPreview(id, result.dataUrl); }
+        resolve();
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+  updateMonitorShotCount(); checkAnalyzeAllMonitorShots();
+  input.value = '';
+}
+
+async function analyzeAllMonitorShots() {
+  const todo = monitorShots.filter(s=>s.img && (!s.analysis || s.analysisFailed));
+  if (!todo.length) return;
+  const btn = document.getElementById('analyzeAllMonitorShotsBtn');
+  btn.disabled = true;
+  try {
+    for (const shot of todo) {
+      try { await analyzeMonitorShot(shot.id); }
+      catch(e) { console.error('Unexpected failure analyzing monitor shot', shot.id, '-- continuing:', e); }
+      await new Promise(r => setTimeout(r, 1500)); // same deliberate pacing as the CCTV camera loop
+    }
+  } finally {
+    btn.textContent = 'RE-ANALYZE';
+    checkAnalyzeAllMonitorShots();
+  }
+  const stillFailed = todo.filter(s => s.analysisFailed);
+  if (stillFailed.length) {
+    alert(`${stillFailed.length} of ${todo.length} screenshot(s) failed to analyze even after retrying (likely a rate limit or brief server issue):\n\n${stillFailed.map(s=>s.name).join('\n')}\n\nClicking Analyze All / Re-Analyze again will retry just these.`);
+  }
+}
+
+async function analyzeMonitorShot(id) {
+  const shot = monitorShots.find(s=>s.id===id); if (!shot || !shot.img) return;
+  let badge, card;
+  try {
+    badge = document.getElementById('msb-'+id);
+    card = document.getElementById('ms-'+id);
+    if (badge) { badge.className='badge b-scan'; badge.textContent='ANALYZING...'; }
+    if (card) card.classList.add('analyzing');
+    const iw = card ? card.querySelector('.cctv-img-wrap') : null;
+    if (iw) { const so=document.createElement('div'); so.className='scan-ov'; so.id='mso-'+id;
+      so.innerHTML='<div class="scan-line"></div><div class="scan-txt">AI SCANNING...</div>'; iw.appendChild(so); }
+    const prompt = `You are a professional security consultant reviewing a screenshot of a commercial property's CCTV monitor wall or DVR/NVR multiview display (a single image showing several camera feeds at once, e.g. a guard station screen or quad/16-way split view).
+${contextNotesBlock('reviewing this monitor wall / multiview screenshot')}
+Assess: how many distinct camera feeds are visible, overall image/feed quality and resolution across the tiles, whether feeds appear live vs. frozen/offline, any visible timestamp/recording indicator or DVR/NVR software branding, and anything suggesting poor coverage, blind spots, tampering, or an outdated system based on what's visible in the feeds and the interface itself.
+Respond ONLY with valid JSON (no markdown). In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
+{"overallScore":<0-100>,"feedCount":<number, your best count of distinct feeds visible, or null if not determinable>,"imageQuality":{"score":<0-100>,"assessment":"<1 sentence>"},"recordingStatus":{"detected":"<Yes/No/Unknown>","assessment":"<1 sentence on whether recording/DVR activity is evidenced>"},"vulnerabilities":[{"severity":"<critical|warning|info>","issue":"<title>","detail":"<1-2 sentences>"}],"positives":["<positive>"],"recommendations":["<recommendation>"],"summary":"<2-3 sentence professional summary>"}`;
+    const data = await fetchWithRetry({max_tokens:2000, content:[
+        {type:'image',source:{type:'base64',media_type:getMedia(shot.img),data:shot.img.split(',')[1]}},
+        {type:'text',text:prompt}]});
+    let raw = data.content?.find(b=>b.type==='text')?.text||'{}';
+    let p; try { p = extractJsonLoose(raw); } catch(e) { console.warn('Monitor shot', id, ': could not parse AI response as JSON. Raw response was:', raw); p = fallbackMonitorShot(); }
+    shot.analysis = p;
+    shot.analysisFailed = false;
+    const so=document.getElementById('mso-'+id); if(so) so.remove();
+    if (card) { card.classList.remove('analyzing'); card.classList.add('analyzed'); }
+    if (badge) { badge.className='badge b-done'; badge.textContent='ANALYZED'; }
+    renderMonitorShotFindings(id, p);
+    renderMonitorShotMetrics(id, p);
+  } catch(e) {
+    console.error('Monitor shot analysis error for', id, 'after retries:', e.message);
+    const so=document.getElementById('mso-'+id); if(so) so.remove();
+    if (card) card.classList.remove('analyzing');
+    if (badge) { badge.className='badge b-err'; badge.textContent='ERROR'; }
+    shot.analysis = fallbackMonitorShot();
+    shot.analysisFailed = true;
+    renderMonitorShotFindings(id, shot.analysis);
+  }
+}
+
+function fallbackMonitorShot() {
+  return {overallScore:55, feedCount:null, imageQuality:{score:55,assessment:"Requires on-site verification."}, recordingStatus:{detected:"Unknown",assessment:"Could not be determined from this image."}, vulnerabilities:[{severity:"info",issue:"On-site review needed",detail:"A physical inspection of the monitor wall / DVR is recommended to fully assess this."}], positives:[], recommendations:["Conduct on-site walkthrough to verify monitor wall setup and recording status."], summary:"Monitor screenshot logged. Full assessment requires on-site verification."};
+}
+
+function renderMonitorShotFindings(id, a) {
+  const panel = document.getElementById('msf-'+id); if (!panel||!a) return;
+  const scoreColor = sc(a.overallScore);
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:7px"><span style="font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase">AI FINDINGS</span><span style="font-family:'Bebas Neue',sans-serif;font-size:18px;color:${scoreColor}">${a.overallScore}/100</span></div>`;
+  (a.vulnerabilities||[]).slice(0,2).forEach(v=>{
+    const dc=v.severity==='critical'?'d-c':v.severity==='warning'?'d-w':'d-i';
+    html+=`<div class="finding-row"><div class="dot ${dc}"></div><div style="font-size:10px;color:var(--text)"><strong>${v.issue}:</strong> ${v.detail}</div></div>`;
+  });
+  if(a.positives?.[0]) html+=`<div class="finding-row"><div class="dot d-g"></div><div style="font-size:10px;color:var(--text)">${a.positives[0]}</div></div>`;
+  html+=`<button onclick="openMonitorShotModal(${id})" style="margin-top:6px;background:transparent;border:1px solid var(--border);color:var(--muted);padding:3px 8px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:1px;cursor:pointer;border-radius:2px;transition:all .2s" onmouseover="this.style.borderColor='var(--accent)';this.style.color='var(--accent)'" onmouseout="this.style.borderColor='var(--border)';this.style.color='var(--muted)'">VIEW FULL ANALYSIS</button>`;
+  panel.innerHTML=html; panel.classList.add('show');
+}
+
+function renderMonitorShotMetrics(id, a) {
+  const card = document.getElementById('ms-'+id);
+  const ex = card.querySelector('.cctv-metrics'); if(ex) ex.remove();
+  if (!a) return;
+  const m = document.createElement('div'); m.className='cctv-metrics';
+  m.innerHTML=`<div class="cctv-m"><div class="cctv-m-val" style="color:var(--white)">${a.feedCount ?? '—'}</div><div class="cctv-m-lbl">Feeds Seen</div></div><div class="cctv-m"><div class="cctv-m-val" style="color:${sc(a.imageQuality?.score||50)}">${a.imageQuality?.score||'—'}</div><div class="cctv-m-lbl">Quality</div></div><div class="cctv-m"><div class="cctv-m-val" style="color:var(--white)">${a.recordingStatus?.detected||'—'}</div><div class="cctv-m-lbl">Recording</div></div><div class="cctv-m"><div class="cctv-m-val" style="color:${sc(a.overallScore||50)}">${a.overallScore||'—'}</div><div class="cctv-m-lbl">Overall</div></div>`;
+  card.appendChild(m);
+}
+
+function openMonitorShotModal(id) {
+  const shot = monitorShots.find(s=>s.id===id); if (!shot || !shot.analysis) return;
+  const a = shot.analysis;
+  document.getElementById('camModalTitle').textContent = shot.name + ' — DETAIL';
+  let html='';
+  if (shot.img) html+=`<div style="margin-bottom:1rem"><img src="${shot.img}" style="width:100%;border-radius:4px;display:block"></div>`;
+  html+=`<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:1rem">${[['Feeds Seen', a.feedCount ?? '—', 'var(--white)'],['Quality', a.imageQuality?.score||'—', sc(a.imageQuality?.score||50)],['Recording', a.recordingStatus?.detected||'—', 'var(--white)'],['Overall', a.overallScore||'—', sc(a.overallScore||50)]].map(([label,v,color])=>`<div style="background:var(--dark);border:1px solid var(--border);padding:10px;border-radius:4px;text-align:center"><div style="font-family:'Bebas Neue',sans-serif;font-size:24px;color:${color}">${v}</div><div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted)">${label.toUpperCase()}</div></div>`).join('')}</div>`;
+  html+=`<div style="margin-bottom:1rem"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:6px">SUMMARY</div><div class="narrative-block" style="margin-bottom:0">${a.summary||''}</div></div>`;
+  if (a.recordingStatus?.assessment) html+=`<div style="margin-bottom:1rem"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:6px">RECORDING STATUS</div><div class="narrative-block" style="margin-bottom:0">${a.recordingStatus.assessment}</div></div>`;
+  if (a.vulnerabilities?.length) html+=`<div style="margin-bottom:1rem"><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:6px">VULNERABILITIES</div>${a.vulnerabilities.map(v=>{const c=v.severity==='critical'?'var(--red)':v.severity==='warning'?'var(--yellow)':'var(--blue)';return`<div style="background:var(--dark);border:1px solid var(--border);border-left:3px solid ${c};padding:9px 11px;border-radius:4px;margin-bottom:5px"><div style="font-size:12px;font-weight:600;color:var(--white);margin-bottom:2px">${v.issue}</div><div style="font-size:11px;color:var(--muted)">${v.detail}</div></div>`;}).join('')}</div>`;
+  if (a.recommendations?.length) html+=`<div><div style="font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:1px;color:var(--muted);margin-bottom:6px">RECOMMENDATIONS</div>${a.recommendations.map((r,i)=>`<div style="display:flex;gap:9px;padding:7px 0;border-bottom:1px solid var(--border);font-size:11px;color:var(--text)"><span style="font-family:'Bebas Neue';color:var(--accent);flex-shrink:0">${i+1}</span>${r}</div>`).join('')}</div>`;
+  document.getElementById('camModalBody').innerHTML=html;
+  document.getElementById('camModal').classList.add('open');
 }
 
 // ── Coverage map: now level-aware and supports any number of cameras ──
@@ -3114,8 +3373,23 @@ function renderFloorPlanCompositeImage(level) {
   });
 }
 
-async function buildAssessmentPdf() {
+// `sections` controls which of the four assessment sections get built into the
+// PDF -- defaults to all four (the "Run All & Build Report" / "Export Report
+// Only" behavior). Passing a subset (e.g. ['cpted']) produces a standalone
+// single-section report: the executive summary (which synthesizes across all
+// four) is skipped, the cover page's section-score table only lists the
+// included section(s), and the other three section bodies are omitted
+// entirely regardless of whether resultData already holds data for them --
+// so a section report never leaks another section's results just because a
+// prior full run populated it.
+async function buildAssessmentPdf(sections = ['cpted','cctv','guard','access']) {
   const PW = 612, PH = 792, M = 54, CW = PW - 2 * M;
+  const includeCpted = sections.includes('cpted');
+  const includeCctv = sections.includes('cctv');
+  const includeGuard = sections.includes('guard');
+  const includeAccess = sections.includes('access');
+  const isFullReport = sections.length === 4;
+  const SECTION_LABELS_PDF = { cpted: 'CPTED & Environment', cctv: 'CCTV System', guard: 'Guard Services', access: 'Access Control' };
   const PC = { ink:[20,22,26], inkDim:[90,96,105], inkFaint:[140,146,155], accent:[176,122,0], red:[200,60,55], yellow:[170,120,20], green:[45,130,70], rule:[220,222,228] };
   const sevRGB = (s) => s==='critical'?PC.red : s==='warning'?PC.yellow : s==='good'?PC.green : PC.inkDim;
   const scoreRGB = (v) => v>=75?PC.green : v>=50?PC.yellow : PC.red;
@@ -3126,32 +3400,45 @@ async function buildAssessmentPdf() {
   // indication of which ones were dropped or why.
   const pdfPhotoFailures = [];
   const cptedPhotoBytes = {};
-  for (const [zone, obj] of Object.entries(cptedImages)) {
-    if (!obj || !obj.data) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): no image data present`); continue; }
-    const bytes = await pdfDataUrlToJpegBytes(obj.data);
-    if (!bytes) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): browser could not re-encode this image for the PDF`); continue; }
-    const d = pdfParseJpegDims(bytes);
-    if (!d) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): image dimensions could not be read`); continue; }
-    cptedPhotoBytes[zone] = { bytes, ...d };
+  if (includeCpted) {
+    for (const [zone, obj] of Object.entries(cptedImages)) {
+      if (!obj || !obj.data) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): no image data present`); continue; }
+      const bytes = await pdfDataUrlToJpegBytes(obj.data);
+      if (!bytes) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): browser could not re-encode this image for the PDF`); continue; }
+      const d = pdfParseJpegDims(bytes);
+      if (!d) { pdfPhotoFailures.push(`${CPTED_LABELS[zone]||zone} (CPTED): image dimensions could not be read`); continue; }
+      cptedPhotoBytes[zone] = { bytes, ...d };
+    }
   }
   const cctvPhotoBytes = {};
-  for (const cam of cctvCameras) {
-    if (!cam.img) continue;
-    const bytes = await pdfDataUrlToJpegBytes(cam.img);
-    if (!bytes) { pdfPhotoFailures.push(`${cam.name} (CCTV): browser could not re-encode this image for the PDF`); continue; }
-    const d = pdfParseJpegDims(bytes);
-    if (!d) { pdfPhotoFailures.push(`${cam.name} (CCTV): image dimensions could not be read`); continue; }
-    cctvPhotoBytes[cam.id] = { bytes, ...d };
-  }
+  const monitorShotPhotoBytes = {};
   const floorPlanCompositeBytes = {};
-  for (const level of propertyLevels) {
-    const compositeUrl = await renderFloorPlanCompositeImage(level);
-    if (!compositeUrl) continue;
-    const bytes = await pdfDataUrlToJpegBytes(compositeUrl);
-    if (!bytes) { pdfPhotoFailures.push(`${level} floor plan: browser could not re-encode the composite image for the PDF`); continue; }
-    const d = pdfParseJpegDims(bytes);
-    if (!d) { pdfPhotoFailures.push(`${level} floor plan: composite image dimensions could not be read`); continue; }
-    floorPlanCompositeBytes[level] = { bytes, ...d };
+  if (includeCctv) {
+    for (const cam of cctvCameras) {
+      if (!cam.img) continue;
+      const bytes = await pdfDataUrlToJpegBytes(cam.img);
+      if (!bytes) { pdfPhotoFailures.push(`${cam.name} (CCTV): browser could not re-encode this image for the PDF`); continue; }
+      const d = pdfParseJpegDims(bytes);
+      if (!d) { pdfPhotoFailures.push(`${cam.name} (CCTV): image dimensions could not be read`); continue; }
+      cctvPhotoBytes[cam.id] = { bytes, ...d };
+    }
+    for (const shot of monitorShots) {
+      if (!shot.img) continue;
+      const bytes = await pdfDataUrlToJpegBytes(shot.img);
+      if (!bytes) { pdfPhotoFailures.push(`${shot.name} (Monitor Wall): browser could not re-encode this image for the PDF`); continue; }
+      const d = pdfParseJpegDims(bytes);
+      if (!d) { pdfPhotoFailures.push(`${shot.name} (Monitor Wall): image dimensions could not be read`); continue; }
+      monitorShotPhotoBytes[shot.id] = { bytes, ...d };
+    }
+    for (const level of propertyLevels) {
+      const compositeUrl = await renderFloorPlanCompositeImage(level);
+      if (!compositeUrl) continue;
+      const bytes = await pdfDataUrlToJpegBytes(compositeUrl);
+      if (!bytes) { pdfPhotoFailures.push(`${level} floor plan: browser could not re-encode the composite image for the PDF`); continue; }
+      const d = pdfParseJpegDims(bytes);
+      if (!d) { pdfPhotoFailures.push(`${level} floor plan: composite image dimensions could not be read`); continue; }
+      floorPlanCompositeBytes[level] = { bytes, ...d };
+    }
   }
   window._lastPdfPhotoFailures = pdfPhotoFailures; // read by exportReport() after this completes
 
@@ -3239,7 +3526,8 @@ async function buildAssessmentPdf() {
 
   // ===== COVER =====
   const propName = document.getElementById('propNameInput')?.value || 'Commercial Property Assessment';
-  line('CONFIDENTIAL  \u2014  SECURITY ASSESSMENT', { size:8, bold:true, color:PC.accent });
+  const coverLabel = isFullReport ? 'SECURITY ASSESSMENT' : `${SECTION_LABELS_PDF[sections[0]] || 'SECTION'} ASSESSMENT`;
+  line(`CONFIDENTIAL  \u2014  ${coverLabel}`, { size:8, bold:true, color:PC.accent });
   y = M + 90;
   const titleLines = wrap(sanitize(propName), CW, 30, true);
   for (const ln of titleLines) { line(ln, { size:30, bold:true }); y += 36; }
@@ -3247,8 +3535,14 @@ async function buildAssessmentPdf() {
   drawRule();
   space(16);
 
+  // Scores considered for the cover summary + breakdown table are limited to
+  // whichever sections this report actually includes -- a single-section
+  // report's "sections complete" count and score table shouldn't reference
+  // the other three categories even if they happen to have data from an
+  // earlier full run.
+  const sectionScoreMap = { cpted: scores.cpted, cctv: scores.cctv, guard: scores.guard, access: scores.access };
   const today = new Date().toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'});
-  const overall = [scores.cpted,scores.cctv,scores.guard,scores.access].filter(v=>v!==null);
+  const overall = sections.map(k=>sectionScoreMap[k]).filter(v=>v!==null && v!==undefined);
   const overallAvg = overall.length ? Math.round(overall.reduce((a,b)=>a+b,0)/overall.length) : null;
   const colW = CW/4;
   const baseY = y;
@@ -3260,13 +3554,13 @@ async function buildAssessmentPdf() {
   line(today, { size:12, bold:true, x:M });
   line(overallAvg!=null ? `${overallAvg}/100` : 'N/A', { size:12, bold:true, color: overallAvg!=null?scoreRGB(overallAvg):PC.ink, x:M+colW });
   line(propertyLevels.join(', '), { size:11, bold:true, x:M+colW*2 });
-  line(`${overall.length} / 4`, { size:12, bold:true, x:M+colW*3 });
+  line(`${overall.length} / ${sections.length}`, { size:12, bold:true, x:M+colW*3 });
   y = baseY + 40;
 
   space(10);
   line('SECTION SCORES', { size:8, bold:true, color:PC.inkFaint });
   y += 14;
-  const sectionLabels = [['CPTED & Environment',scores.cpted],['CCTV System',scores.cctv],['Guard Services',scores.guard],['Access Control',scores.access]];
+  const sectionLabels = sections.map(k => [SECTION_LABELS_PDF[k] || k, sectionScoreMap[k]]);
   for (const [label,val] of sectionLabels) {
     need(20);
     line(label, { size:11, x:M });
@@ -3277,7 +3571,8 @@ async function buildAssessmentPdf() {
   }
 
   // ===== EXECUTIVE SUMMARY (synthesizes CPTED + CCTV + Guard + Access Control) =====
-  const overallSummary = await synthesizeOverallSummary();
+  // Only meaningful \u2014 and only built \u2014 for the full, all-four-sections report.
+  const overallSummary = isFullReport ? await synthesizeOverallSummary() : null;
   if (overallSummary) {
     newPage();
     line('EXECUTIVE SUMMARY', { size:8, bold:true, color:PC.accent, x:M });
@@ -3318,7 +3613,7 @@ async function buildAssessmentPdf() {
   }
 
   // ===== SECTION I — CPTED =====
-  if (resultData.cpted) {
+  if (includeCpted && resultData.cpted) {
     newPage();
     const a = resultData.cpted;
     sectionHeader('I', 'CPTED & Environmental Assessment', a.overallScore);
@@ -3411,8 +3706,9 @@ async function buildAssessmentPdf() {
 
   // ===== SECTION II — CCTV =====
   const analyzedCams = cctvCameras.filter(c=>c.analysis);
+  const analyzedMonitorShots = monitorShots.filter(s=>s.analysis);
   const placementLevels = Object.keys(floorPlanCompositeBytes);
-  if (analyzedCams.length || placementLevels.length) {
+  if (includeCctv && (analyzedCams.length || placementLevels.length || analyzedMonitorShots.length)) {
     newPage();
     sectionHeader('II', 'CCTV System Analysis', scores.cctv);
     text(`${analyzedCams.length} of ${cctvCameras.length} cameras analyzed.`, { size:10, color:PC.inkDim });
@@ -3453,10 +3749,37 @@ async function buildAssessmentPdf() {
       drawRule();
       space(6);
     }
+    if (analyzedMonitorShots.length) {
+      need(14); line('MONITOR WALL / MULTIVIEW SCREENSHOTS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      for (const shot of analyzedMonitorShots) {
+        const a = shot.analysis;
+        need(40);
+        line(shot.name, { size:12, bold:true, x:M });
+        const lbl = `${a.overallScore}/100`;
+        line(lbl, { size:12, bold:true, color:scoreRGB(a.overallScore), x: PW-M-measure(lbl,12,true) });
+        y += 16;
+        const feedTxt = a.feedCount != null ? `${a.feedCount} feed(s) visible` : 'feed count not determined';
+        const recTxt = a.recordingStatus?.detected ? `Recording detected: ${a.recordingStatus.detected}` : '';
+        text([feedTxt, recTxt].filter(Boolean).join('    |    '), { size:9, color:PC.inkFaint });
+        space(4);
+        if (monitorShotPhotoBytes[shot.id]) embedPhoto(monitorShotPhotoBytes[shot.id], 180);
+        text(a.summary || '', { size:9.5, color:PC.inkDim, leading:1.5 });
+        space(4);
+        (a.vulnerabilities||[]).forEach(v => {
+          need(30);
+          line((v.severity||'').toUpperCase(), { size:8, bold:true, color:sevRGB(v.severity==='critical'?'critical':v.severity==='warning'?'warning':'good'), x:M });
+          text(`${v.issue||''}: ${v.detail||''}`, { size:9.5, x:M+8, maxWidth:CW-8, leading:1.5 });
+          space(2);
+        });
+        space(6);
+        drawRule();
+        space(6);
+      }
+    }
   }
 
   // ===== SECTION III — GUARD =====
-  if (resultData.guard) {
+  if (includeGuard && resultData.guard) {
     newPage();
     const a = resultData.guard;
     sectionHeader('III', 'Security Guard Program', a.overallScore);
@@ -3508,7 +3831,7 @@ async function buildAssessmentPdf() {
   }
 
   // ===== SECTION IV — ACCESS CONTROL =====
-  if (resultData.access) {
+  if (includeAccess && resultData.access) {
     newPage();
     const a = resultData.access;
     sectionHeader('IV', 'Access Control System', a.overallScore);
@@ -3658,6 +3981,8 @@ function collectProjectState() {
     cptedImages,
     cctvCameras,
     nextCctvId,
+    monitorShots,
+    nextMonitorShotId,
     floorPlans,
     guardFields: {
       company: document.getElementById('g-company')?.value,
@@ -3781,6 +4106,26 @@ function restoreProjectState(state) {
   refreshAllLevelSelects();
   updateCctvCount(); checkAnalyzeAll();
   if (cctvCameras.some(c=>c.analysis)) { buildCctvScore(); buildCctvNarrative(); }
+
+  // --- Monitor wall / multiview screenshots ---
+  monitorShots = [];
+  nextMonitorShotId = state.nextMonitorShotId || 0;
+  document.getElementById('monitorShotGrid').innerHTML = '';
+  for (const shot of (state.monitorShots || [])) {
+    monitorShots.push(shot);
+    renderMonitorShotCard(shot);
+    if (shot.img) applyMonitorShotPreview(shot.id, shot.img);
+    if (shot.analysis) {
+      const badge = document.getElementById('msb-'+shot.id);
+      const card = document.getElementById('ms-'+shot.id);
+      if (badge) { badge.className='badge b-done'; badge.textContent='ANALYZED'; }
+      if (card) card.classList.add('analyzed');
+      renderMonitorShotFindings(shot.id, shot.analysis);
+      renderMonitorShotMetrics(shot.id, shot.analysis);
+    }
+  }
+  updateMonitorShotCount(); checkAnalyzeAllMonitorShots();
+
   floorPlans = state.floorPlans || {};
   activeMapView = 'schematic';
   placingCameraId = null;
@@ -3848,12 +4193,13 @@ async function runFullAssessment() {
       setStatus('Step 1/5 — Skipped CPTED (no photos uploaded).');
     }
 
-    if (cctvCameras.some(c => c.img)) {
+    if (cctvCameras.some(c => c.img) || monitorShots.some(s => s.img)) {
       setStatus('Step 2/5 — Running CCTV analysis...');
       goPage(2);
-      await analyzeAllCctv();
+      if (cctvCameras.some(c => c.img)) await analyzeAllCctv();
+      if (monitorShots.some(s => s.img)) await analyzeAllMonitorShots();
     } else {
-      setStatus('Step 2/5 — Skipped CCTV (no camera photos uploaded).');
+      setStatus('Step 2/5 — Skipped CCTV (no camera photos or monitor screenshots uploaded).');
     }
 
     setStatus('Step 3/5 — Evaluating guard program...');
@@ -3877,18 +4223,81 @@ async function runFullAssessment() {
 }
 
 
-async function exportReport(evt) {
+// ═══════════════════════════════════════════
+// PER-SECTION "RUN & BUILD REPORT"
+// Same idea as runFullAssessment() but scoped to one section — runs just that
+// section's analysis, then builds a standalone PDF containing only that
+// section (via buildAssessmentPdf's `sections` filter) rather than the full
+// combined report. Lets Rob hand a client a CCTV-only or CPTED-only report
+// without waiting on (or re-triggering) the other three categories.
+// ═══════════════════════════════════════════
+const SECTION_REPORT_META = {
+  cpted: {
+    label: 'CPTED', btnId: 'runCptedBtn',
+    hasWork: () => Object.keys(cptedImages).length > 0,
+    run: async () => { goPage(1); await analyzeCpted(); },
+    skipMsg: 'No CPTED photos uploaded — nothing to analyze.',
+  },
+  cctv: {
+    label: 'CCTV', btnId: 'runCctvBtn',
+    hasWork: () => cctvCameras.some(c => c.img) || monitorShots.some(s => s.img),
+    run: async () => {
+      goPage(2);
+      if (cctvCameras.some(c => c.img)) await analyzeAllCctv();
+      if (monitorShots.some(s => s.img)) await analyzeAllMonitorShots();
+    },
+    skipMsg: 'No camera photos or monitor screenshots uploaded — nothing to analyze.',
+  },
+  guard: {
+    label: 'Guard', btnId: 'runGuardBtn',
+    hasWork: () => true, // the guard form has sensible defaults even untouched
+    run: async () => { goPage(3); await analyzeGuard(); },
+  },
+  access: {
+    label: 'Access Control', btnId: 'runAccessBtn',
+    hasWork: () => true, // same as guard — defaults make it always runnable
+    run: async () => { goPage(4); await analyzeAccessControl(); },
+  },
+};
+
+async function runSectionAndBuild(key) {
+  const meta = SECTION_REPORT_META[key];
+  if (!meta) return;
+  const btn = document.getElementById(meta.btnId);
+  const statusEl = document.getElementById('sectionReportStatus');
+  const setStatus = (s) => { if (statusEl) statusEl.textContent = s; };
+  if (btn) btn.disabled = true;
+  try {
+    if (!meta.hasWork()) {
+      setStatus(meta.skipMsg || `Nothing to analyze for ${meta.label}.`);
+      return;
+    }
+    setStatus(`Running ${meta.label} analysis...`);
+    await meta.run();
+    setStatus(`Building ${meta.label} report (PDF)...`);
+    await exportReport(undefined, [key]);
+    setStatus(`✓ ${meta.label} report complete. Downloaded.`);
+  } catch (e) {
+    console.error(`${meta.label} section report failed:`, e);
+    setStatus(`Failed: ${e.message} — check console (F12) for detail.`);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function exportReport(evt, sections) {
   const btn = document.getElementById('exportReportBtn') || evt?.target?.closest?.('button');
   const originalText = btn ? btn.textContent : null;
   if (btn) { btn.disabled = true; btn.textContent = 'BUILDING PDF...'; }
   try {
-    const bytes = await buildAssessmentPdf();
+    const bytes = await buildAssessmentPdf(sections);
     const blob = new Blob([bytes], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const propName = (document.getElementById('propNameInput')?.value || 'property-assessment').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/(^-|-$)/g,'') || 'property-assessment';
+    const sectionSlug = (sections && sections.length < 4) ? '-' + sections.join('-') : '';
     const a = document.createElement('a');
     a.href = url;
-    a.download = `secureview-${propName}-${new Date().toISOString().slice(0,10)}.pdf`;
+    a.download = `secureview-${propName}${sectionSlug}-${new Date().toISOString().slice(0,10)}.pdf`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
