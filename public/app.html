@@ -355,7 +355,13 @@ select.form-input option{background:var(--dark)}
         <div class="panel-title">&#127795; CPTED &amp; ENVIRONMENTAL ASSESSMENT</div>
         <div class="panel-sub">UPLOAD PROPERTY PHOTOS — AI EVALUATES LIGHTING, LANDSCAPING, NATURAL SURVEILLANCE &amp; ENVIRONMENTAL DESIGN</div>
       </div>
-      <button class="btn-primary" id="analyzeCptedBtn" onclick="analyzeCpted()" disabled>&#128269; ANALYZE</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        <div style="display:flex;gap:8px">
+          <button class="btn-primary" id="analyzeCptedBtn" onclick="analyzeCpted()" disabled>&#128269; ANALYZE</button>
+          <button class="btn-ghost" id="runCptedBtn" onclick="runSectionAndBuild('cpted')" title="Runs CPTED analysis, then generates a standalone PDF for just this section">&#9889; RUN &amp; BUILD REPORT</button>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted);text-align:right;max-width:260px" id="cptedReportStatus"></div>
+      </div>
     </div>
 
     <div class="panel-sub" style="margin-bottom:6px">PROPERTY LEVELS — tag zones and cameras by level so multi-level buildings (parking ramps, upper floors) are tracked separately</div>
@@ -478,7 +484,13 @@ select.form-input option{background:var(--dark)}
         <div class="panel-title">&#128249; CCTV SYSTEM ANALYSIS</div>
         <div class="panel-sub">UPLOAD CAMERA IMAGES OR FEED SCREENSHOTS — AI EVALUATES PLACEMENT, COVERAGE &amp; BLIND SPOTS</div>
       </div>
-      <button class="btn-blue" id="analyzeAllCctvBtn" onclick="analyzeAllCctv()" disabled>&#128269; ANALYZE ALL</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+        <div style="display:flex;gap:8px">
+          <button class="btn-blue" id="analyzeAllCctvBtn" onclick="analyzeAllCctv()" disabled>&#128269; ANALYZE ALL</button>
+          <button class="btn-ghost" id="runCctvBtn" onclick="runSectionAndBuild('cctv')" title="Runs CCTV analysis (cameras + monitor screenshots), then generates a standalone PDF for just this section">&#9889; RUN &amp; BUILD REPORT</button>
+        </div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--muted);text-align:right;max-width:260px" id="cctvReportStatus"></div>
+      </div>
     </div>
 
     <div class="cctv-grid" id="cctvGrid"></div>
@@ -705,8 +717,11 @@ select.form-input option{background:var(--dark)}
       </div>
     </div>
     <div class="btn-row">
-      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)">Complete all fields then run AI evaluation</span>
-      <button class="btn-primary" onclick="analyzeGuard()">&#128269; EVALUATE GUARD PROGRAM</button>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="guardReportStatus">Complete all fields then run AI evaluation</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" onclick="analyzeGuard()">&#128269; EVALUATE GUARD PROGRAM</button>
+        <button class="btn-ghost" id="runGuardBtn" onclick="runSectionAndBuild('guard')" title="Runs Guard analysis, then generates a standalone PDF for just this section">&#9889; RUN &amp; BUILD REPORT</button>
+      </div>
     </div>
   </div>
 
@@ -798,8 +813,11 @@ select.form-input option{background:var(--dark)}
     <div id="acZonesWrap"></div>
     <button class="add-slot-btn" onclick="addAcZone()">+ ADD ZONE</button>
     <div class="btn-row">
-      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)">Complete all fields then run AI evaluation</span>
-      <button class="btn-primary" onclick="analyzeAccessControl()">&#128269; EVALUATE ACCESS CONTROL</button>
+      <span style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted)" id="accessReportStatus">Complete all fields then run AI evaluation</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn-primary" onclick="analyzeAccessControl()">&#128269; EVALUATE ACCESS CONTROL</button>
+        <button class="btn-ghost" id="runAccessBtn" onclick="runSectionAndBuild('access')" title="Runs Access Control analysis, then generates a standalone PDF for just this section">&#9889; RUN &amp; BUILD REPORT</button>
+      </div>
     </div>
   </div>
 
@@ -864,14 +882,6 @@ select.form-input option{background:var(--dark)}
     <div class="sb-label">Additional Context</div>
     <textarea class="form-input" id="execSummaryNotes" placeholder="Optional — notes for the AI to weigh across every analysis (e.g. recent incidents, planned upgrades, a fix already made that a photo won't show, budget constraints, prior audit findings)..." style="font-size:10px;padding:6px 9px;min-height:70px;resize:vertical"></textarea>
     <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5;margin-top:4px">Factored into CPTED, CCTV, Guard, and Access Control analysis, plus the Executive Summary.</div>
-  </div>
-  <div class="sb-section">
-    <div class="sb-label">Section Reports</div>
-    <button class="btn-ghost" id="runCptedBtn" onclick="runSectionAndBuild('cpted')" style="width:100%;margin-bottom:6px;font-size:9px">&#127795; RUN CPTED &amp; BUILD REPORT</button>
-    <button class="btn-ghost" id="runCctvBtn" onclick="runSectionAndBuild('cctv')" style="width:100%;margin-bottom:6px;font-size:9px">&#128249; RUN CCTV &amp; BUILD REPORT</button>
-    <button class="btn-ghost" id="runGuardBtn" onclick="runSectionAndBuild('guard')" style="width:100%;margin-bottom:6px;font-size:9px">&#128110; RUN GUARD &amp; BUILD REPORT</button>
-    <button class="btn-ghost" id="runAccessBtn" onclick="runSectionAndBuild('access')" style="width:100%;margin-bottom:6px;font-size:9px">&#128272; RUN ACCESS CONTROL &amp; BUILD REPORT</button>
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);line-height:1.5" id="sectionReportStatus">Runs just that section's analysis, then generates a standalone PDF for it only.</div>
   </div>
   <div class="sb-section">
     <div class="sb-label">Full Assessment</div>
@@ -4233,13 +4243,13 @@ async function runFullAssessment() {
 // ═══════════════════════════════════════════
 const SECTION_REPORT_META = {
   cpted: {
-    label: 'CPTED', btnId: 'runCptedBtn',
+    label: 'CPTED', btnId: 'runCptedBtn', statusId: 'cptedReportStatus',
     hasWork: () => Object.keys(cptedImages).length > 0,
     run: async () => { goPage(1); await analyzeCpted(); },
     skipMsg: 'No CPTED photos uploaded — nothing to analyze.',
   },
   cctv: {
-    label: 'CCTV', btnId: 'runCctvBtn',
+    label: 'CCTV', btnId: 'runCctvBtn', statusId: 'cctvReportStatus',
     hasWork: () => cctvCameras.some(c => c.img) || monitorShots.some(s => s.img),
     run: async () => {
       goPage(2);
@@ -4249,12 +4259,12 @@ const SECTION_REPORT_META = {
     skipMsg: 'No camera photos or monitor screenshots uploaded — nothing to analyze.',
   },
   guard: {
-    label: 'Guard', btnId: 'runGuardBtn',
+    label: 'Guard', btnId: 'runGuardBtn', statusId: 'guardReportStatus',
     hasWork: () => true, // the guard form has sensible defaults even untouched
     run: async () => { goPage(3); await analyzeGuard(); },
   },
   access: {
-    label: 'Access Control', btnId: 'runAccessBtn',
+    label: 'Access Control', btnId: 'runAccessBtn', statusId: 'accessReportStatus',
     hasWork: () => true, // same as guard — defaults make it always runnable
     run: async () => { goPage(4); await analyzeAccessControl(); },
   },
@@ -4264,7 +4274,7 @@ async function runSectionAndBuild(key) {
   const meta = SECTION_REPORT_META[key];
   if (!meta) return;
   const btn = document.getElementById(meta.btnId);
-  const statusEl = document.getElementById('sectionReportStatus');
+  const statusEl = document.getElementById(meta.statusId);
   const setStatus = (s) => { if (statusEl) statusEl.textContent = s; };
   if (btn) btn.disabled = true;
   try {
