@@ -3220,36 +3220,85 @@ const OVERALL_SECTION_LABELS = { cpted: 'CPTED & Environment', cctv: 'CCTV Syste
 
 async function synthesizeOverallSummary() {
   const sections = [];
+
+  // --- CPTED: AI narrative + principle breakdown scores ---
   if (resultData.cpted) {
+    const a = resultData.cpted;
+    const breakdown = [['Lighting',a.lighting?.score],['Natural Surveillance',a.naturalSurveillance?.score],['Territorial Reinforcement',a.territorialReinforcement?.score],['Access Management',a.accessManagement?.score]]
+      .filter(([,v]) => v != null).map(([l,v]) => `${l} ${v}/100`).join(', ');
     sections.push({
-      key: 'cpted', label: OVERALL_SECTION_LABELS.cpted, score: resultData.cpted.overallScore,
-      summary: resultData.cpted.summary || '',
-      findings: (resultData.cpted.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+      key: 'cpted', label: OVERALL_SECTION_LABELS.cpted, score: a.overallScore,
+      summary: a.summary || '',
+      breakdown: breakdown ? `Principle scores: ${breakdown}.` : '',
+      findings: (a.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
     });
   }
+
+  // --- CCTV: per-camera analysis + monitor wall/multiview screenshots + who's
+  // actually watching (monitoring type + schedule) -- this last part is raw
+  // operational input the user enters on the camera cards themselves, not an
+  // AI finding, but it's exactly the kind of detail that matters when cross-
+  // referencing against Guard coverage hours or Access Control zone risk below.
   const analyzedCams = cctvCameras.filter(c => c.analysis);
-  if (analyzedCams.length) {
-    const avgScore = Math.round(analyzedCams.reduce((s, c) => s + (c.analysis.overallScore || 0), 0) / analyzedCams.length);
+  const analyzedShots = monitorShots.filter(s => s.analysis);
+  if (analyzedCams.length || analyzedShots.length) {
+    const avgScore = analyzedCams.length ? Math.round(analyzedCams.reduce((s, c) => s + (c.analysis.overallScore || 0), 0) / analyzedCams.length) : null;
     const camFindings = analyzedCams.flatMap(c => (c.analysis.vulnerabilities || []).map(v => ({ severity: v.severity, title: v.issue, detail: v.detail })))
       .filter(f => f.severity === 'critical' || f.severity === 'warning');
+    const shotFindings = analyzedShots.flatMap(s => (s.analysis.vulnerabilities || []).map(v => ({ severity: v.severity, title: v.issue, detail: v.detail })))
+      .filter(f => f.severity === 'critical' || f.severity === 'warning');
+
+    const monitoredCount = cctvCameras.filter(c => c.monitoring && c.monitoring !== 'none').length;
+    const remoteCount = cctvCameras.filter(c => c.monitoring === 'remote').length;
+    const onsiteCount = cctvCameras.filter(c => c.monitoring === 'onsite').length;
+    const monitoringSummary = cctvCameras.length
+      ? `Monitoring coverage: ${monitoredCount} of ${cctvCameras.length} camera(s) are actively monitored (${remoteCount} remote, ${onsiteCount} onsite guard); ${cctvCameras.length - monitoredCount} are recording-only / not actively monitored.`
+      : '';
+    const scheduleDetail = cctvCameras.filter(c => c.monitoring && c.monitoring !== 'none')
+      .map(c => `${c.name} [${c.level}] — ${c.monitoring === 'remote' ? 'remotely' : 'onsite guard'} monitored ${c.monitorStart}–${c.monitorEnd}`).join('; ');
+    const monitorWallDetail = analyzedShots.length
+      ? analyzedShots.map(s => `${s.name}: ${s.analysis.feedCount ?? '?'} feed(s) visible, recording status ${s.analysis.recordingStatus?.detected || 'Unknown'}`).join('; ')
+      : '';
+
     sections.push({
-      key: 'cctv', label: OVERALL_SECTION_LABELS.cctv, score: avgScore,
-      summary: `${analyzedCams.length} of ${cctvCameras.length} cameras analyzed, average score ${avgScore}/100.`,
-      findings: camFindings.slice(0, 5),
+      key: 'cctv', label: OVERALL_SECTION_LABELS.cctv,
+      score: avgScore,
+      summary: analyzedCams.length ? `${analyzedCams.length} of ${cctvCameras.length} camera(s) analyzed, average score ${avgScore}/100.` : 'No individual camera photos analyzed yet.',
+      breakdown: [monitoringSummary, scheduleDetail ? `Monitoring schedule — ${scheduleDetail}.` : '', monitorWallDetail ? `Monitor wall / multiview screenshots — ${monitorWallDetail}.` : ''].filter(Boolean).join(' '),
+      findings: [...camFindings, ...shotFindings].slice(0, 5),
     });
   }
+
+  // --- GUARD: AI evaluation + raw program details + zone-by-zone schedule,
+  // read straight from the form fields (same fields analyzeGuard() itself reads).
   if (resultData.guard) {
+    const a = resultData.guard;
+    const g = {
+      company: document.getElementById('g-company')?.value, contract: document.getElementById('g-contract')?.value,
+      count: document.getElementById('g-count')?.value, cost: document.getElementById('g-cost')?.value,
+      svcOnsite: document.getElementById('g-svc-onsite')?.checked, svcRoving: document.getElementById('g-svc-roving')?.checked,
+      patrolCount: document.getElementById('g-patrol-count')?.value, armed: document.getElementById('g-armed')?.value,
+    };
+    const serviceDesc = [g.svcOnsite ? 'onsite fixed guards' : null, g.svcRoving ? `roving patrol (${g.patrolCount} rounds/24h)` : null].filter(Boolean).join(' + ') || 'no active guard service configured';
+    const zoneDesc = guardZones.map(z => `${z.name}: day ${z.dayStart}–${z.dayEnd}, night ${z.nightStart}–${z.nightEnd}, Sat ${z.satStart}, Sun ${z.sunStart}`).join('; ');
     sections.push({
-      key: 'guard', label: OVERALL_SECTION_LABELS.guard, score: resultData.guard.overallScore,
-      summary: resultData.guard.summary || '',
-      findings: (resultData.guard.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+      key: 'guard', label: OVERALL_SECTION_LABELS.guard, score: a.overallScore,
+      summary: a.summary || '',
+      breakdown: `${g.company || 'Provider not specified'} (${g.contract}), ${g.count || '?'} guard(s)/shift, $${g.cost || '?'}/mo, ${g.armed === 'armed' ? 'armed' : 'unarmed'}. Service type: ${serviceDesc}. Zone coverage schedule — ${zoneDesc || 'not specified'}.`,
+      findings: (a.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
     });
   }
+
+  // --- ACCESS CONTROL: AI evaluation + system types + zone-by-zone access rules ---
   if (resultData.access) {
+    const a = resultData.access;
+    const systemsDesc = [...selectedAcTypes].map(t => AC_TYPE_META[t]?.label || t).join(', ') || 'none selected';
+    const zoneDesc = acZones.map(z => `${z.name}: entry=${z.mainSec}, after-hours=${z.afterHours}, visitor=${z.visitor}, sensitive-area=${z.sensitive}, alarms=${z.alarms}`).join('; ');
     sections.push({
-      key: 'access', label: OVERALL_SECTION_LABELS.access, score: resultData.access.overallScore,
-      summary: resultData.access.summary || '',
-      findings: (resultData.access.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
+      key: 'access', label: OVERALL_SECTION_LABELS.access, score: a.overallScore,
+      summary: a.summary || '',
+      breakdown: `Systems present: ${systemsDesc}. Zone-by-zone access rules — ${zoneDesc || 'not specified'}.`,
+      findings: (a.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
     });
   }
 
@@ -3276,28 +3325,49 @@ async function synthesizeOverallSummary() {
   const fallback = {
     overallScore,
     summary: fallbackSummary,
+    // Cross-category connections require actual reasoning across sections, which
+    // this deterministic fallback (used only if the AI call fails) can't do --
+    // left empty rather than fabricating a connection, so the PDF simply omits
+    // that subsection instead of showing something misleading.
+    crossCategoryInsights: [],
     topRecommendations: fallbackRecs.length ? fallbackRecs : allFindings.slice(0, 5).map(f => f.title).filter(Boolean),
     criticalIssues: allFindings.filter(f => f.severity === 'critical').slice(0, 5),
     missing,
   };
 
+  // Each section block now carries three layers: the AI's own narrative summary,
+  // its score breakdown, AND the raw structured inputs the assessor actually
+  // entered into that section's form/cards (guard schedule, access zone rules,
+  // camera monitoring coverage, CPTED principle scores, etc.) -- not just the
+  // AI's prose about them. That raw layer is what lets the synthesis notice
+  // things neither section's own AI call was in a position to catch on its own,
+  // e.g. a door Access Control flagged as high-risk that has no camera pointed
+  // at it, or a zone Guard only covers 9-5 that CPTED flagged as poorly lit at night.
   const compact = sections.map(s => `${s.label} (score ${s.score ?? '?'}/100): ${(s.summary || '').slice(0, 400)}`
-    + (s.findings.length ? ` Key issues: ${s.findings.map(f => f.title).filter(Boolean).join('; ')}` : '')).join('\n\n');
+    + (s.breakdown ? `\nOperational details: ${s.breakdown}` : '')
+    + (s.findings.length ? `\nKey issues: ${s.findings.map(f => f.title).filter(Boolean).join('; ')}` : '')).join('\n\n');
 
-  const prompt = `You are a professional security consultant writing the executive summary of a commercial property security assessment. The assessment covered up to four categories; here is what was completed:
+  const prompt = `You are a professional security consultant writing the executive summary of a commercial property security assessment. The assessment covered up to four categories; here is what was completed, including both each category's AI findings AND the raw operational details the assessor entered (schedules, system types, zone rules, monitoring coverage, etc.):
 
 ${compact}
 ${missing.length ? `\nNot yet assessed: ${missing.map(k => OVERALL_SECTION_LABELS[k]).join(', ')}.` : ''}
 ${extraNotes ? `\nAdditional context provided by the assessor (weigh this alongside the category findings above -- it may explain, prioritize, or add nuance to what was found, but should not replace the findings themselves):\n${extraNotes}` : ''}
 
-Write a concise executive-level synthesis that connects findings ACROSS categories where relevant (e.g. a CCTV blind spot at an access-controlled door, or a guard patrol gap in an area CPTED flagged as poorly lit), rather than just restating each section separately.
+Cross-reference the operational details AND findings ACROSS categories to form one coherent, big-picture assessment -- do not just restate each section separately. Actively look for connections like:
+- A CCTV camera that is not actively monitored (or has no monitoring schedule) covering an entry point or zone that Access Control or CPTED flagged as higher-risk.
+- A Guard coverage schedule (zone hours) that leaves a zone unguarded during hours CPTED flagged as poorly lit or otherwise vulnerable, or during hours that zone is access-controlled but not physically patrolled.
+- An Access Control zone with weak entry/after-hours/visitor rules that also lacks camera coverage or guard presence in the same area.
+- Redundancies or gaps where multiple categories overlap (e.g. a zone that is both guarded AND remotely monitored -- worth noting as a strength -- versus a zone with none of the three).
+- Whether the guard program's video verification capability actually lines up with which cameras are remotely monitored.
+
+Write a concise executive-level synthesis that leads with these cross-category connections where they exist, giving the property owner a genuine big-picture read on the property rather than four separate summaries stitched together.
 
 Respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
-{"summary":"<4-6 sentence overall narrative synthesizing the property's security posture across all assessed categories, written for a property owner/decision-maker>","topRecommendations":["<the 3-5 highest-priority actions across ALL categories, ranked by impact>"]}`;
+{"summary":"<4-6 sentence overall narrative synthesizing the property's security posture across all assessed categories, explicitly connecting details across categories where relevant, written for a property owner/decision-maker>","crossCategoryInsights":["<2-4 specific observations that only make sense by combining two or more categories, e.g. 'The loading dock is covered by Camera 3 but that camera is not actively monitored and the zone has no guard coverage after 6pm'>"],"topRecommendations":["<the 3-5 highest-priority actions across ALL categories, ranked by impact>"]}`;
 
   try {
     const resp = await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ max_tokens: 900, content: prompt }) });
+      body: JSON.stringify({ max_tokens: 1100, content: prompt }) });
     const d = await resp.json();
     if (!resp.ok || d.error) throw new Error(d.error || `HTTP ${resp.status}`);
     const raw = d.content?.find(b => b.type === 'text')?.text || '{}';
@@ -3306,6 +3376,7 @@ Respond ONLY with valid JSON (no markdown): In any text field, never use a liter
     return {
       overallScore,
       summary: parsed.summary,
+      crossCategoryInsights: Array.isArray(parsed.crossCategoryInsights) ? parsed.crossCategoryInsights.filter(Boolean) : [],
       topRecommendations: Array.isArray(parsed.topRecommendations) && parsed.topRecommendations.length ? parsed.topRecommendations : fallback.topRecommendations,
       criticalIssues: fallback.criticalIssues,
       missing,
@@ -3603,6 +3674,11 @@ async function buildAssessmentPdf(sections = ['cpted','cctv','guard','access']) 
     }
     text(overallSummary.summary || '', { size:11, color:PC.inkDim, leading:1.6 });
     space(10);
+    if (overallSummary.crossCategoryInsights?.length) {
+      need(14); line('CROSS-CATEGORY OBSERVATIONS', { size:8, bold:true, color:PC.inkFaint }); y += 12;
+      overallSummary.crossCategoryInsights.forEach((insight,i) => { need(20); text(`${i+1}. ${insight}`, { size:10, color:PC.inkDim, leading:1.5 }); space(4); });
+      space(4);
+    }
     if (overallSummary.criticalIssues?.length) {
       need(14); line('CRITICAL ISSUES ACROSS ALL CATEGORIES', { size:8, bold:true, color:PC.inkFaint }); y += 12;
       for (const f of overallSummary.criticalIssues) {
