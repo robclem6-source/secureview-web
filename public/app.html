@@ -2828,25 +2828,41 @@ async function analyzeGuard() {
     notes: document.getElementById('g-notes').value
   };
 
+  // Only feed the AI the operational data for whichever guard service type(s)
+  // are actually checked. The zone-by-zone day/night schedule describes fixed
+  // onsite posts, so it's irrelevant (and shouldn't be evaluated) if Onsite
+  // Guards isn't checked; the patrol frequency describes roving coverage, so
+  // it's irrelevant if Roving Patrol isn't checked. Previously the zone
+  // schedule was always appended to the prompt regardless of this checkbox,
+  // which meant a roving-only (or no-guard) property still got evaluated
+  // against an onsite fixed-post schedule that doesn't apply to it.
   const zoneDesc = guardZones.map(z =>
     `- ${z.name}: Weekday Day ${z.dayStart}-${z.dayEnd}, Night ${z.nightStart}-${z.nightEnd}; Saturday ${z.satStart}-${z.satEnd}; Sunday ${z.sunStart}-${z.sunEnd}`
   ).join('\n');
+
+  const serviceTypeDesc = [data.svcOnsite ? 'Onsite Guards (see zone schedule below)' : null, data.svcRoving ? `Roving Patrol (${data.patrolCount} rounds per 24-hour period, walking or vehicle)` : null].filter(Boolean).join(' + ') || 'No guard service type selected';
+
+  const zoneBlock = data.svcOnsite
+    ? `\nCoverage schedule by zone (this property has distinct zones with potentially different operating hours and risk profiles — evaluate each zone's coverage independently and flag any zone left unguarded during hours it is likely to be occupied or accessible):\n${zoneDesc}\n`
+    : '';
+
+  const serviceTypeNote = !data.svcOnsite && !data.svcRoving
+    ? `\nNote: neither Onsite Guards nor Roving Patrol is selected — treat this as having NO active guard coverage and score/find accordingly, rather than assuming either type is in use.`
+    : `\nThis property uses ONLY the guard service type(s) listed above (${[data.svcOnsite?'Onsite':null,data.svcRoving?'Roving':null].filter(Boolean).join(' + ')}). Base the "coverage" score and all findings strictly on that/those service type(s) and the data provided for it/them below${data.svcOnsite?'':' -- there is no zone-by-zone schedule because Onsite Guards is not selected, so do not evaluate or infer one'}${data.svcRoving?'':' -- do not evaluate or infer a roving patrol frequency because Roving Patrol is not selected'}. Do not penalize the program for lacking data related to a service type that isn't in use here.`;
 
   const prompt = `You are a professional security program consultant evaluating a commercial property's guard service program.
 
 Guard Program Details:
 - Provider: ${data.company} (${data.contract})
 - Guards: ${data.count} on-site, $${data.cost}/month
-- Guard Service Type: ${[data.svcOnsite ? 'Onsite Guards (see zone schedule below)' : null, data.svcRoving ? `Roving Patrol (${data.patrolCount} rounds per 24-hour period, walking or vehicle)` : null].filter(Boolean).join(' + ') || 'Not specified'}
+- Guard Service Type: ${serviceTypeDesc}
 - Armed: ${data.armed}
 - Incident Reporting: ${data.reporting}
 - Tour Verification: ${data.tour}
 - Video Verification: ${data.video}
 - Certifications: First Aid:${data.firstaid}, Active Shooter:${data.shooter}, Radio:${data.radio}, De-escalation:${data.conflict}
 - Notes: ${data.notes}
-
-Coverage schedule by zone (this property has distinct zones with potentially different operating hours and risk profiles — evaluate each zone's coverage independently and flag any zone left unguarded during hours it is likely to be occupied or accessible):
-${zoneDesc}
+${zoneBlock}${serviceTypeNote}
 ${contextNotesBlock('scoring and describing the guard program')}
 
 Evaluate this guard program and respond ONLY with valid JSON (no markdown): In any text field, never use a literal double-quote character (") -- use single quotes or rephrase instead, since an embedded " breaks JSON parsing.
@@ -3280,11 +3296,14 @@ async function synthesizeOverallSummary() {
       patrolCount: document.getElementById('g-patrol-count')?.value, armed: document.getElementById('g-armed')?.value,
     };
     const serviceDesc = [g.svcOnsite ? 'onsite fixed guards' : null, g.svcRoving ? `roving patrol (${g.patrolCount} rounds/24h)` : null].filter(Boolean).join(' + ') || 'no active guard service configured';
-    const zoneDesc = guardZones.map(z => `${z.name}: day ${z.dayStart}–${z.dayEnd}, night ${z.nightStart}–${z.nightEnd}, Sat ${z.satStart}, Sun ${z.sunStart}`).join('; ');
+    // Matches analyzeGuard()'s own filtering: the zone-by-zone schedule only
+    // applies to fixed onsite posts, so only surface it here (for cross-
+    // referencing against CPTED/Access) when Onsite Guards is actually selected.
+    const zoneDesc = g.svcOnsite ? guardZones.map(z => `${z.name}: day ${z.dayStart}–${z.dayEnd}, night ${z.nightStart}–${z.nightEnd}, Sat ${z.satStart}, Sun ${z.sunStart}`).join('; ') : '';
     sections.push({
       key: 'guard', label: OVERALL_SECTION_LABELS.guard, score: a.overallScore,
       summary: a.summary || '',
-      breakdown: `${g.company || 'Provider not specified'} (${g.contract}), ${g.count || '?'} guard(s)/shift, $${g.cost || '?'}/mo, ${g.armed === 'armed' ? 'armed' : 'unarmed'}. Service type: ${serviceDesc}. Zone coverage schedule — ${zoneDesc || 'not specified'}.`,
+      breakdown: `${g.company || 'Provider not specified'} (${g.contract}), ${g.count || '?'} guard(s)/shift, $${g.cost || '?'}/mo, ${g.armed === 'armed' ? 'armed' : 'unarmed'}. Service type: ${serviceDesc}.` + (zoneDesc ? ` Zone coverage schedule (onsite) — ${zoneDesc}.` : ''),
       findings: (a.findings || []).filter(f => f.severity === 'critical' || f.severity === 'warning').slice(0, 5),
     });
   }
